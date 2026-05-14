@@ -9,7 +9,9 @@ import pandas as pd
 
 from tools._common import (
     coerce_metric,
+    cohort_rate,
     get_rows,
+    RATE_METRICS,
     server,
     validate_segment,
 )
@@ -24,12 +26,15 @@ _WEEKDAY_INDEX = {
 @server.tool(
     description=(
         "Compute the stable baseline for `metric` on the chosen segment. "
-        "Methodology: take all values from `baseline_start_date` up to the "
-        "latest available date; optionally restrict to one weekday (Monday "
-        "through Sunday); optionally remove IQR outliers (Q1−1.5×IQR, "
-        "Q3+1.5×IQR). Returns the mean of clean values. "
-        "Defaults match the PM's documented methodology. "
+        "Methodology: take all values from `baseline_start_date` up to "
+        "`baseline_end_date` (exclusive upper bound — pass the day before the "
+        "target date so the target is never included in its own baseline); "
+        "optionally restrict to one weekday (Monday through Sunday); optionally "
+        "remove IQR outliers (Q1−1.5×IQR, Q3+1.5×IQR). Returns the mean of "
+        "clean values. Defaults match the PM's documented methodology. "
         "weekday accepts case-insensitive names like 'monday' or None for all. "
+        "baseline_end_date defaults to None (no upper bound) — always pass it "
+        "when comparing to a specific date. "
         "Returns {ok, metric, platform, acquisition_source, weekday, "
         "baseline_start_date, baseline, n_observations, outliers_removed}."
     )
@@ -40,6 +45,7 @@ def compute_stable_baseline(
     acquisition_source: str,
     weekday: str | None = None,
     baseline_start_date: str = "2026-01-01",
+    baseline_end_date: str | None = None,  # MUST pass target_date − 1; if None, baseline includes today and contaminates itself
     exclude_outliers_iqr: bool = True,
 ) -> dict[str, Any]:
     err = validate_segment(platform, acquisition_source)
@@ -53,10 +59,20 @@ def compute_stable_baseline(
             "error": f"baseline_start_date not parseable: {baseline_start_date!r}",
         }
 
+    end: pd.Timestamp | None = None
+    if baseline_end_date is not None:
+        end = pd.to_datetime(baseline_end_date, errors="coerce")
+        if pd.isna(end):
+            return {
+                "ok": False,
+                "error": f"baseline_end_date not parseable: {baseline_end_date!r}",
+            }
+
     df = get_rows(
         platform=platform,
         acquisition_source=acquisition_source,
         date_from=start,
+        date_to=end,
     )
     if metric not in df.columns:
         return {"ok": False, "error": f"unknown metric: {metric!r}"}
@@ -98,9 +114,24 @@ def compute_stable_baseline(
         q1, q3 = np.percentile(values, [25, 75])
         iqr = q3 - q1
         lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-        kept = values[(values >= lo) & (values <= hi)]
-        outliers_removed = int(len(values) - len(kept))
-        values = kept
+        mask = (values >= lo) & (values <= hi)
+        outliers_removed = int((~mask).sum())
+        values = values[mask]
+        df = df[mask]
+
+    if metric in RATE_METRICS:
+        users_col, installs_col = RATE_METRICS[metric]
+        baseline_val = cohort_rate(df, users_col, installs_col)
+        if baseline_val is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"no installs in window for {metric!r} "
+                    f"({platform} / {acquisition_source})"
+                ),
+            }
+    else:
+        baseline_val = float(values.mean())
 
     return {
         "ok": True,
@@ -109,7 +140,7 @@ def compute_stable_baseline(
         "acquisition_source": acquisition_source,
         "weekday": weekday_name,
         "baseline_start_date": str(start.date()),
-        "baseline": round(float(values.mean()), 6),
+        "baseline": round(baseline_val, 6),
         "n_observations": int(values.size),
         "outliers_removed": outliers_removed,
     }
