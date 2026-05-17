@@ -1,6 +1,6 @@
 # D1 Retention Analysis
 
-> **This is the PM-editable playbook.** Edit the prose freely and rerun `./tune` to see the effect on the report. The `tune` script, the MCP tools under `tools/`, and `config.yaml` are engineer-managed — leave those alone. If you need a calculation no existing tool covers, fill out `request.md` and hand it to your engineer.
+> **This is the PM-editable playbook.** Edit the prose freely and rerun `./tune` to see the effect on the report. The `tune` script, the MCP tools under `tools/`, and `config.yaml` are engineer-managed — leave those alone. If you need a calculation no existing tool covers, fill out `reference/request.md` and hand it to your engineer.
 >
 > **Sections you will tune most:** "How to pick the window", "D1 diagnostic checklist" (Stages 1–3), and "Report shape". The "Hard rules" section at the bottom is methodology canon — change it rarely and only on purpose.
 
@@ -60,6 +60,8 @@ Before reading any non-primary sheet for the first time in a run, call `load_fil
 ## Where to find column semantics
 
 The primary sheet's full column dictionary is at the bottom of this prompt under **"# Primary sheet — column dictionary"** — already loaded, no tool call required. For each pivot sheet, the dictionary arrives bundled in the `get_rows` response as `dictionary_md` whenever you read that pivot.
+
+**Verify column names against the dictionary BEFORE the first `get_rows` call, not after a rejection.** When you build a `columns=[...]` list, each name must appear in the `# Primary sheet — column dictionary` block at the bottom of this prompt (or, for pivot sheets, in the `dictionary_md` returned by an earlier `get_rows` response). Do not invent column names from signal-field shapes. Signal-field names returned by `compute_signals_for_day` (e.g. `d0_uninstall_rate_delta_pp`, `installs_ratio`, `pct_d0_notification_opt_in_delta_pp`) are **derived metric names**, not column names. The underlying columns are different — for example, the `d0_uninstall_rate_delta_pp` signal is computed internally from `d0_uninstalls / installs`; there is no column literally named `d0_uninstall_rate`. Stripping a `_delta_pp` or `_ratio` suffix from a signal name does not give you a valid column name. Check the dictionary first.
 
 **Use the dictionary, not error-message hints, as the source of truth for what each column means.** When `get_rows` rejects an unknown column name and lists available columns in a hint, do NOT pick the closest-named column from the hint and assume it means the same thing. The hint gives names, not semantics — and similarly-named columns are often different kinds of quantities (e.g., `d0_uninstalls` is a count, while a "d0 uninstall rate" is a derived fraction). Always check the dictionary to confirm whether the candidate column is a count, a rate, a fraction, a derived value, or something else, before substituting it for what you originally wanted.
 

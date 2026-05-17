@@ -1,6 +1,6 @@
 # PM Tuning Sandbox — D1 Retention Analysis
 
-> **PMs — start with [`PM_QUICKSTART.md`](PM_QUICKSTART.md). Engineers — read on.**
+> **PMs — start with [`reference/PM_QUICKSTART.md`](reference/PM_QUICKSTART.md). Engineers — read on.**
 
 A small project that lets the product team tune the LLM analysis for D1 retention without writing any code.
 
@@ -166,7 +166,7 @@ Place the call where in the flow you want it to fire. A line in Stage 1 fires be
 
 ### Where to find the full tool list
 
-`primitives.md` is the source of truth — auto-generated from the registered MCP tools, one card per tool with parameters, defaults, return shape, and a copy-pasteable worked example. Ten tools today: two for files (`list_docs`, `load_file`), two for sheets (`list_sheets`, `get_rows`), and six for deterministic math (`compute_rolling_average`, `compute_stable_baseline`, `compare_to_baseline`, `flag_dip_days`, `compute_signals_for_day`, `compute_acquisition_mix_shift`). Defaults match the PM methodology (2pp = flag, 4pp = alert, baseline starts 2026-01-01) but every parameter is exposed — you can override any of them from the playbook prose.
+`reference/primitives.md` is the source of truth — auto-generated from the registered MCP tools, one card per tool with parameters, defaults, return shape, and a copy-pasteable worked example. Ten tools today: two for files (`list_docs`, `load_file`), two for sheets (`list_sheets`, `get_rows`), and six for deterministic math (`compute_rolling_average`, `compute_stable_baseline`, `compare_to_baseline`, `flag_dip_days`, `compute_signals_for_day`, `compute_acquisition_mix_shift`). Defaults match the PM methodology (2pp = flag, 4pp = alert, baseline starts 2026-01-01) but every parameter is exposed — you can override any of them from the playbook prose.
 
 ---
 
@@ -195,9 +195,9 @@ There are two flavours of authoring. The first — wiring up existing tools in y
 
 ### Using an existing tool in your playbook
 
-Every calculation the LLM makes flows through one of the tools listed in `primitives.md`. Each card has a copy-pasteable worked example. The loop:
+Every calculation the LLM makes flows through one of the tools listed in `reference/primitives.md`. Each card has a copy-pasteable worked example. The loop:
 
-1. Open `primitives.md` and find a card whose worked example matches what
+1. Open `reference/primitives.md` and find a card whose worked example matches what
    you want to compute. Copy the example.
 2. Paste the example into `d1-retention-analysis.md` at the step where it
    should fire, and edit the parameter values for your case. Use the prose
@@ -217,7 +217,7 @@ Sometimes you need a calculation no existing tool covers. You have two paths.
 
 **If you can read Python at a surface level, author the tool yourself.** The template at `tools/_TEMPLATE.py` is heavily annotated; you copy it, edit a handful of marked lines, save. The aggregator picks the new file up automatically — there is no separate registration step. You do not write any pandas; the helpers in `tools/_common.py` (`get_rows`, `aggregate`, `cohort_rate`, `delta_pp`, `filter_window`) cover the math.
 
-**If you'd rather hand it off to an engineer**, fill out `request.md` at the project root with the suggested name, a plain-English description, the inputs, and the expected output. Hand the file over. The engineer adds the tool, the catalog regenerates, and you reference it from the playbook like any other.
+**If you'd rather hand it off to an engineer**, fill out `reference/request.md` with the suggested name, a plain-English description, the inputs, and the expected output. Hand the file over. The engineer adds the tool, the catalog regenerates, and you reference it from the playbook like any other.
 
 #### Worked end-to-end example
 
@@ -291,10 +291,10 @@ You should see "10 tool(s) registered" (was 9). If anything is wrong — bad imp
 **Step 4 — regenerate the catalog:**
 
 ```bash
-uv run python generate_catalog.py
+uv run python scripts/generate_catalog.py
 ```
 
-`primitives.md` now has a new card for `compute_install_to_dau_ratio` with the parameter table and a worked example, generated automatically from the description string.
+`reference/primitives.md` now has a new card for `compute_install_to_dau_ratio` with the parameter table and a worked example, generated automatically from the description string.
 
 **Step 5 — reference it from the playbook.** Open `d1-retention-analysis.md` and add a paragraph at the spot in the diagnostic where the call should fire — for this example, right before Stage 1:
 

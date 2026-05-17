@@ -41,6 +41,8 @@ For row dated **April 16**:
 
 So a *low `d1` on `date`* really points at the *cohort that arrived `date − 1`*. When investigating an Apr 16 dip, the cohort to scrutinise is **Apr 15** (the install cohort).
 
+> _Note: this describes how the raw `d1` column data is laid out. The playbook uses a different PM-facing convention — a PM-named date is treated as the install cohort day directly. So "May 12 D1" in a PM query means the May 12 install cohort (whose D1 is measured May 13), looked up via `d1_corrected[May 12]`. Both frames are consistent for `d1_corrected`; only raw `d1` requires the T-1 shift described above._
+
 ## Retention rates — install-date aligned (`d1_corrected`, `d7_corrected`, `d30_corrected`)
 
 For row dated **April 16**:

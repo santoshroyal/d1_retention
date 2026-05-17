@@ -17,10 +17,17 @@ from tools.list_docs import list_docs
 @server.tool(
     description=(
         "Load one file from the sandbox data folder. "
+        "The parameter is named `filename` — pass the file path as a keyword "
+        "argument: `load_file(filename='docs/india_holidays.md')`. Do NOT use "
+        "`path`, `file`, `name`, or positional arguments — the schema only "
+        "accepts `filename` as a keyword. "
         "Supported types: .csv, .tsv, .xlsx, .md, .txt, .json, .yaml, .yml. "
         "CSV/TSV/XLSX are rendered as Markdown tables. Other types are returned "
-        "as text. The filename is relative to the data/ folder, e.g. "
-        "'dict/app_health_daily.md' or 'sheets/app_health_daily.csv'."
+        "as text. The `filename` value is a path relative to the data/ folder, "
+        "e.g. 'dict/app_health_daily.md' or 'sheets/app_health_daily.csv'. "
+        "Returns {ok, filename, content} on success, or {ok: false, error, "
+        "available} when the file is not found (the `available` list shows what "
+        "context docs ARE loadable under data/docs/)."
     )
 )
 def load_file(filename: str) -> dict[str, Any]:

@@ -6,8 +6,8 @@ How to use this file:
     2. Edit ONLY the lines marked `# EDIT THIS`.
     3. Leave the lines marked `# LEAVE AS-IS` alone.
     4. Save. Run `./tune --verify` to confirm the new tool registered cleanly.
-    5. Re-run `python generate_catalog.py` so the new tool gets a card in
-       `primitives.md`. Now you can reference it from the playbook prose.
+    5. Re-run `python scripts/generate_catalog.py` so the new tool gets a card in
+       `reference/primitives.md`. Now you can reference it from the playbook prose.
 
 This file is skipped by the MCP aggregator because its name starts with `_`.
 That means copying it is safe — your *new* file (without a leading `_`) is
@@ -35,7 +35,7 @@ from tools._common import (
 # every parameter with one sentence, and the return shape.
 #
 # The catalog generator (generate_catalog.py) reads this string and turns it
-# into a PM-friendly card in primitives.md, so it pays to write it carefully.
+# into a PM-friendly card in reference/primitives.md, so it pays to write it carefully.
 @server.tool(
     description=(
         "ONE-SENTENCE summary of what this tool computes. "
@@ -113,7 +113,7 @@ def compute_template_metric(
 # Tips you may want to keep in mind:
 #
 # - When you need help-functions that don't exist yet (like a new aggregation
-#   or a new filter), fill out request.md at the project root rather than
+#   or a new filter), fill out reference/request.md rather than
 #   adding pandas calls here. The engineer will add a helper to _common.py and
 #   you can use it cleanly.
 #

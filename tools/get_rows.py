@@ -229,7 +229,17 @@ def get_rows(
             "ok": False,
             "error": f"unknown column(s) on sheet {canonical!r}: {missing}",
             "hint": (
-                f"Use column names that appear on this sheet. Available: "
+                "Consult the column dictionary for valid names AND their semantics — "
+                "the primary sheet's dictionary is at the bottom of the system prompt "
+                "under '# Primary sheet — column dictionary'; pivot sheet dictionaries "
+                "arrive bundled as `dictionary_md` in earlier `get_rows` responses. "
+                "Do NOT substitute the closest-named column from the list below without "
+                "first checking the dictionary — names that look similar often differ "
+                "in semantics (count vs rate, derived vs direct, all-DAU vs cohort-only). "
+                "Signal-field names like `d0_uninstall_rate_delta_pp` or `installs_ratio` "
+                "are NOT column names; they are derived metrics returned by "
+                "`compute_signals_for_day`. "
+                f"Columns actually present on this sheet (for reference only): "
                 f"{list(df.columns)}."
             ),
         }

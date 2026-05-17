@@ -150,7 +150,7 @@ def run(
     no_open: bool = typer.Option(
         True,
         "--no-open",
-        help="Do not auto-open the report in the default Markdown viewer.",
+        help="Deprecated — auto-open is off by default. Flag is retained for backward compatibility and is a no-op.",
     ),
     quiet: bool = typer.Option(
         False,

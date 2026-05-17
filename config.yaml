@@ -24,7 +24,7 @@ system_preamble: |
   - For every threshold check, rolling average, stable baseline, dip-flagging, or
     per-day diagnostic — call an MCP tool. Do not derive averages or apply
     thresholds yourself.
-  - If you want context, call `list_files()` to see the menu of context documents
+  - If you want context, call `list_docs()` to see the menu of context documents
     each with a one-line description, then `load_file('<path>')` for the ones that
     look relevant.
 

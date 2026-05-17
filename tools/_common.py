@@ -6,7 +6,7 @@ Every tool file in this folder imports `server` from here and decorates with
 PMs writing a new tool file: you almost never need to change anything in this
 file. You import the helpers (get_rows / aggregate / cohort_rate / delta_pp /
 filter_window) and use them in your new tool. If you need a helper that
-doesn't exist, fill out the request.md template at the project root.
+doesn't exist, fill out the reference/request.md template.
 """
 
 from __future__ import annotations
