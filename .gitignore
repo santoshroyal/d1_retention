@@ -2,6 +2,10 @@
 outputs/*
 !outputs/.gitkeep
 
+# Scheduled-run logs — kept locally
+logs/*
+!logs/.gitkeep
+
 # Auto-fetched sheet cache (managed by tools/_sheet_store.py).
 # Only the primary app_health_daily.csv is checked in.
 data/sheets/_cache/

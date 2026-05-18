@@ -269,6 +269,561 @@ def doctor() -> None:
     console.print("[bold green]✓ doctor: all checks passed[/bold green]")
 
 
+# ---------------------------------------------------------------------------
+# Scheduled daily mode — `./tune schedule`
+# ---------------------------------------------------------------------------
+
+SCHEDULE_LOCK_PATH = PROJECT_ROOT / "logs" / "schedule.lock"
+
+
+@app.command()
+def schedule(
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Run the data check + analysis path but do NOT send any email. "
+            "Useful for testing without spamming recipients."
+        ),
+    ),
+    prod: bool = typer.Option(
+        False,
+        "--prod",
+        help=(
+            "Send to the `extended_recipients:` list (the full team) instead "
+            "of the default `recipients:` list (which is intended for repeated "
+            "testing). The daily cron entry should pass --prod."
+        ),
+    ),
+    test_email: str = typer.Option(
+        "",
+        "--test-email",
+        help=(
+            "Send a one-shot test email to this address using the configured "
+            "SMTP credentials, then exit. Skips the data check and the LLM call."
+        ),
+    ),
+) -> None:
+    """Daily scheduled run — analyse the most recent COMPLETE D1 cohort and email the report.
+
+    Designed to be invoked from cron at 11:05 IST. Targets the install cohort
+    from two days ago (today − 2 IST) — that cohort's return day was yesterday,
+    so its `d1_corrected` was populated by the upstream pipeline overnight.
+    (Yesterday's cohort can't be analysed at 11:05 AM because its return day
+    is today, which is not yet complete.)
+
+    If the target cohort's data is still not in the sheet, retries every
+    `schedule.retry_interval_minutes` minutes up to `schedule.retry_attempts`
+    times. After the last failure, sends a "data unavailable" notice instead
+    of the report.
+    """
+    _load_env_file()
+    config = _load_config()
+    if test_email:
+        _validate_smtp_env(config)
+        _send_test_email(config, test_email)
+        return
+    _validate_schedule_config(config, require_smtp=not dry_run, extended=prod)
+    _run_schedule_loop(config, dry_run=dry_run, extended=prod)
+
+
+def _load_env_file() -> None:
+    """Load PROJECT_ROOT/.env into os.environ if present. Cron does not source shell rc files."""
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _validate_smtp_env(config: dict[str, Any]) -> None:
+    """Fail fast if the SMTP env vars are missing. Used by both test_email and schedule."""
+    email_cfg = config.get("email") or {}
+    from_var = email_cfg.get("from_env_var", "TOI_SMTP_FROM")
+    pwd_var = email_cfg.get("password_env_var", "TOI_SMTP_APP_PASSWORD")
+    if not os.environ.get(from_var):
+        _die(
+            f"environment variable {from_var} is not set.",
+            extra=f"  Copy .env.example to .env and set {from_var}.",
+        )
+    if not os.environ.get(pwd_var):
+        _die(
+            f"environment variable {pwd_var} is not set.",
+            extra=(
+                f"  Generate a Google App Password (Account → Security → "
+                f"2-Step Verification → App passwords) and put it in {pwd_var} in .env."
+            ),
+        )
+
+
+def _validate_schedule_config(config: dict[str, Any], *, require_smtp: bool, extended: bool = False) -> None:
+    """Fail fast if any required schedule or email config piece is missing.
+
+    SMTP env vars are only required when we will actually send email
+    (`require_smtp=True`). Dry-run mode passes `require_smtp=False` so the
+    flow can be exercised without setting up credentials first.
+
+    `extended=True` validates that the `extended_recipients:` list (used by
+    `--prod`) is non-empty. `extended=False` validates the default
+    `recipients:` list (used for dev/testing).
+    """
+    if "schedule" not in config:
+        _die("config.yaml is missing the `schedule:` section.")
+    if "email" not in config:
+        _die("config.yaml is missing the `email:` section.")
+    seg = (config.get("schedule") or {}).get("target_segment") or {}
+    if "platform" not in seg or "acquisition_source" not in seg:
+        _die("config.yaml: schedule.target_segment must define platform and acquisition_source.")
+    if require_smtp:
+        _validate_smtp_env(config)
+    recipients_path = PROJECT_ROOT / "data" / "email_recipients.yaml"
+    if not recipients_path.exists():
+        _die(
+            f"recipients file not found: data/email_recipients.yaml",
+            extra="  See data/email_recipients.yaml in the repo for the expected shape.",
+        )
+    if not _load_recipients(extended=extended):
+        key = "extended_recipients" if extended else "recipients"
+        _die(
+            f"no recipients defined in data/email_recipients.yaml under `{key}:`.",
+            extra=f"  Add at least one email address under the `{key}:` key.",
+        )
+
+
+def _load_recipients(*, extended: bool = False) -> list[str]:
+    """Read and validate the recipients list. Returns [] when malformed; caller decides what to do.
+
+    `extended=False` (default) reads the `recipients:` key — the small list for
+    testing. `extended=True` reads `extended_recipients:` — the full team list
+    used by `--prod` and the daily cron entry.
+    """
+    path = PROJECT_ROOT / "data" / "email_recipients.yaml"
+    if not path.exists():
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        _die(f"data/email_recipients.yaml malformed: {e}")
+    key = "extended_recipients" if extended else "recipients"
+    raw = data.get(key) or []
+    if not isinstance(raw, list):
+        _die(f"data/email_recipients.yaml: `{key}` must be a list of strings.")
+    return [str(r).strip() for r in raw if str(r).strip()]
+
+
+def _target_cohort_date():
+    """Return the most recent install cohort whose D1 is fully measured.
+
+    `d1_corrected[date X]` requires the full day X+1 to be in the sheet (it
+    measures users who installed on X returning on X+1). At an 11:05 AM IST
+    run, the only cohort whose D1 was COMPLETE by overnight processing is the
+    one from two days ago — its return day (yesterday) is now done.
+
+    Concretely:
+      - 11:05 AM May 17 IST → returns May 15 (return day was May 16 = yesterday,
+        now complete; d1_corrected[May 15] is populated by the upstream pipeline).
+      - 11:05 AM May 18 IST → returns May 16.
+
+    Yesterday's cohort (today − 1) cannot be analysed at 11:05 AM because its
+    return day is today, which is not yet complete.
+    """
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    return now_ist.date() - timedelta(days=2)
+
+
+def _check_data_present(target_date, config: dict[str, Any]) -> bool:
+    """Check if (target_date, platform, source) has non-null d1_corrected in the loaded sheet.
+
+    Assumes the sheet has already been refreshed by the caller (so the in-memory
+    cache reflects the latest content). Does NOT trigger a network refresh.
+    """
+    from tools._common import sheet
+
+    seg = config["schedule"]["target_segment"]
+    try:
+        df = sheet("app_health_daily")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"  [yellow]sheet load failed:[/yellow] {type(e).__name__}: {e}")
+        return False
+    target = pd.to_datetime(target_date)
+    rows = df[
+        (df["date"] == target)
+        & (df["platform"] == seg["platform"])
+        & (df["acquisition_source"] == seg["acquisition_source"])
+    ]
+    if rows.empty:
+        return False
+    value = rows["d1_corrected"].iloc[0]
+    return bool(pd.notna(value))
+
+
+def _render_markdown_to_html(md_text: str) -> str:
+    """Convert the report markdown into a self-contained HTML document for the email body."""
+    import markdown
+
+    body_html = markdown.markdown(
+        md_text,
+        extensions=["tables", "fenced_code", "sane_lists"],
+    )
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "max-width:760px;margin:24px auto;padding:0 16px;color:#222;line-height:1.55;}"
+        "h1,h2,h3{color:#111;}"
+        "table{border-collapse:collapse;margin:12px 0;}"
+        "th,td{border:1px solid #ddd;padding:6px 10px;text-align:left;}"
+        "th{background:#f4f4f4;}"
+        "code{background:#f4f4f4;padding:1px 4px;border-radius:3px;}"
+        "hr{border:none;border-top:1px solid #eee;margin:18px 0;}"
+        "blockquote{border-left:3px solid #ccc;margin:12px 0;padding:4px 12px;color:#555;}"
+        "</style></head><body>"
+        f"{body_html}"
+        "</body></html>"
+    )
+
+
+def _send_email(
+    config: dict[str, Any],
+    *,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    recipients: list[str],
+    attachment_path: Path | None = None,
+) -> None:
+    """Send a multipart email via SMTP. Recipients are BCC'd so addresses are not exposed to each other."""
+    import smtplib
+    from email.message import EmailMessage
+
+    email_cfg = config["email"]
+    from_addr = os.environ[email_cfg["from_env_var"]]
+    password = os.environ[email_cfg["password_env_var"]].replace(" ", "")
+    smtp_host = email_cfg.get("smtp_host", "smtp.gmail.com")
+    smtp_port = int(email_cfg.get("smtp_port", 587))
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = from_addr  # visible recipient = sender; actual recipients are BCC
+    msg["Bcc"] = ", ".join(recipients)
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype="html")
+    if attachment_path is not None and attachment_path.exists():
+        msg.add_attachment(
+            attachment_path.read_bytes(),
+            maintype="text",
+            subtype="markdown",
+            filename=attachment_path.name,
+        )
+
+    with smtplib.SMTP(smtp_host, smtp_port) as smtp:
+        smtp.starttls()
+        smtp.login(from_addr, password)
+        smtp.send_message(msg)
+
+
+def _send_test_email(config: dict[str, Any], recipient: str) -> None:
+    """Send a sanity-check email to confirm SMTP credentials are working."""
+    console.print(f"[cyan]Sending test email to {recipient}...[/cyan]")
+    subject = "TOI D1 Retention — SMTP test"
+    text = (
+        "This is a test message from `./tune schedule --test-email`.\n"
+        "SMTP credentials are working. You can ignore this email."
+    )
+    html = (
+        "<p>This is a test message from <code>./tune schedule --test-email</code>.</p>"
+        "<p>SMTP credentials are working. You can ignore this email.</p>"
+    )
+    try:
+        _send_email(
+            config,
+            subject=subject,
+            html_body=html,
+            text_body=text,
+            recipients=[recipient],
+        )
+        console.print(f"[bold green]✓ test email sent to {recipient}[/bold green]")
+    except Exception as e:  # noqa: BLE001
+        _die(f"failed to send test email: {type(e).__name__}: {e}")
+
+
+def _extract_severity_badge(report_text: str) -> str:
+    """Parse the severity badge ('🔴 ALERT', '🟡 FLAG', etc.) from the first non-empty line of the report.
+
+    The line typically starts with markdown heading markers (`#`) which we
+    strip before matching. The badge may be followed by separators like `·`.
+    """
+    if not report_text.strip():
+        return "unknown"
+    for line in report_text.splitlines():
+        # Strip leading markdown heading markers and whitespace.
+        stripped = line.lstrip("#").strip()
+        if not stripped:
+            continue
+        m = re.match(
+            r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)",
+            stripped,
+        )
+        if m:
+            return re.sub(r"\s+", " ", m.group(1))
+        # Stop after the first non-empty line — badge is always at the top.
+        break
+    return "unknown"
+
+
+def _run_scheduled_attempt(config: dict[str, Any], target_date) -> Path | None:
+    """One scheduled attempt: refresh sheets, check data, run analysis if present.
+
+    Prints the same preflight banner, sheet status, inline report, and run
+    summary as `./tune run` so the operator sees a complete trace.
+
+    Returns the report path on success, or None when the target cohort's
+    `d1_corrected` is still NaN (the outer retry loop handles re-attempts).
+    """
+    from tools._common import _SHEET_CACHE
+
+    seg = config["schedule"]["target_segment"]
+    query = f"{target_date.strftime('%B %d')} {seg['platform']} {seg['acquisition_source']} D1"
+
+    # 1. Force-refresh every pre_fetch sheet and print the per-sheet status
+    #    (same display as `./tune run --refresh`).
+    _run_sheet_prefetch(force=True)
+    # Clear in-memory DataFrame cache so the next read sees the refreshed file.
+    _SHEET_CACHE.clear()
+
+    # 2. Silent data-presence check against the freshly refreshed sheet.
+    if not _check_data_present(target_date, config):
+        return None
+
+    console.print(f"  [green]✓[/green] data found for {target_date}. Query: {query!r}")
+
+    # 3. Resolve provider + env preflight (same as run()).
+    resolved_model, model_display, provider = _resolve_model(None, config)
+    _ensure_environment(cli_required=provider)
+    prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
+    sheet_stats = _compute_sheet_stats()
+    user_message = _build_user_message(prose=prose, pm_query=query)
+
+    # 4. Print the full preflight banner (playbook, data, extra docs, model,
+    #    PM query) — same as the interactive `./tune` flow.
+    _print_preflight(
+        prose=prose,
+        sheet_stats=sheet_stats,
+        docs=_list_docs(),
+        model_display=model_display,
+        pm_query=query,
+    )
+
+    # 5. Run the LLM exactly the same way `run()` does.
+    output_path = _resolve_output_path(config["output_template"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    invoke_fn = _invoke_codex if provider == "codex" else _invoke_claude
+    spinner_label = "Codex reasoning…" if provider == "codex" else "Claude reasoning…"
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn(f"[cyan]{spinner_label}[/cyan]"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        progress.add_task("reasoning", total=None)
+        result = invoke_fn(
+            system_prompt=config["system_preamble"],
+            user_message=user_message,
+            model=resolved_model,
+            progress=progress,
+        )
+
+    output_path.write_text(result["text"], encoding="utf-8")
+    _update_latest_symlink(output_path)
+
+    # 6. Render the report inline (same as run() when not quiet).
+    console.print()
+    console.print(Rule("[bold cyan]Report[/bold cyan]", style="cyan"))
+    console.print()
+    console.print(Markdown(result["text"]))
+    console.print()
+    console.print(Rule(style="cyan"))
+
+    # 7. Print the same Done summary lines as run() so the operator sees
+    #    cost, tokens, paths, and any stream-parse warnings.
+    console.print()
+    console.print(
+        f"[bold green]✓ Done[/bold green] in {result['duration_ms']/1000:.1f}s "
+        f"· ${result['cost_usd']:.4f} "
+        f"· {result['input_tokens']:,} in / {result['output_tokens']:,} out tokens"
+    )
+    console.print(f"  Report:  [cyan]{output_path}[/cyan]")
+    console.print(f"  Latest:  [cyan]{OUTPUTS_DIR / 'latest.md'}[/cyan]")
+    _print_run_summary(result)
+    console.print()
+
+    return output_path
+
+
+def _send_outcome_email(
+    config: dict[str, Any],
+    target_date,
+    recipients: list[str],
+    *,
+    status: str,
+    body_text: str,
+    attachment_path: Path | None,
+    body_is_markdown: bool,
+) -> None:
+    """Compose subject from template + send the final outcome email (success or failure)."""
+    subject_template = config["email"].get(
+        "subject_template", "TOI D1 Retention — {date} — {status}"
+    )
+    subject = subject_template.format(date=target_date, status=status)
+    if body_is_markdown:
+        html_body = _render_markdown_to_html(body_text)
+    else:
+        # Plain notice (data unavailable, analysis failed) — render as a simple paragraph.
+        escaped = body_text.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
+        html_body = f"<p>{escaped}</p>"
+    _send_email(
+        config,
+        subject=subject,
+        html_body=html_body,
+        text_body=body_text,
+        recipients=recipients,
+        attachment_path=attachment_path,
+    )
+
+
+def _run_schedule_loop(config: dict[str, Any], *, dry_run: bool, extended: bool = False) -> None:
+    """Outer retry loop. Acquires a lock so two cron firings cannot overlap."""
+    import fcntl
+
+    SCHEDULE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SCHEDULE_LOCK_PATH.touch(exist_ok=True)
+
+    sched_cfg = config["schedule"]
+    attempts = int(sched_cfg.get("retry_attempts", 5))
+    interval_min = int(sched_cfg.get("retry_interval_minutes", 30))
+    recipients = _load_recipients(extended=extended)
+    target_date = _target_cohort_date()
+    seg = sched_cfg["target_segment"]
+    list_label = "extended (prod)" if extended else "default (testing)"
+
+    console.print(
+        f"[bold]Scheduled run[/bold] · target cohort: {target_date} "
+        f"({seg['platform']} / {seg['acquisition_source']})"
+    )
+    console.print(f"  retry policy: {attempts} attempts, {interval_min} min apart")
+    console.print(f"  recipients [{list_label}] ({len(recipients)}): {', '.join(recipients)}")
+    if dry_run:
+        console.print("  [yellow]DRY RUN — no email will be sent[/yellow]")
+
+    with SCHEDULE_LOCK_PATH.open("rb") as lf:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            console.print(
+                "[yellow]Another scheduled run is already in progress (lock held). Exiting.[/yellow]"
+            )
+            return
+
+        try:
+            report_path: Path | None = None
+            analysis_error: str | None = None
+            for attempt in range(1, attempts + 1):
+                console.print(f"\n[bold]Attempt {attempt}/{attempts}[/bold]")
+                try:
+                    report_path = _run_scheduled_attempt(config, target_date)
+                except Exception as e:  # noqa: BLE001
+                    analysis_error = f"{type(e).__name__}: {e}"
+                    console.print(f"  [red]analysis failed:[/red] {analysis_error}")
+                    break
+                if report_path is not None:
+                    break
+                console.print(f"  [yellow]Data not yet available for {target_date}.[/yellow]")
+                if attempt < attempts:
+                    # In dry-run, use a tiny sleep so the retry loop is testable
+                    # in seconds rather than the configured 30 minutes.
+                    sleep_secs = 3 if dry_run else interval_min * 60
+                    label = f"{sleep_secs} seconds (dry-run)" if dry_run else f"{interval_min} minutes"
+                    console.print(f"  Sleeping {label} before next attempt...")
+                    time.sleep(sleep_secs)
+
+            # Outcome dispatch.
+            if analysis_error is not None:
+                console.print(f"\n[red]Analysis error — sending failure notice.[/red]")
+                if dry_run:
+                    console.print("[yellow]DRY RUN — skipping email send.[/yellow]")
+                    return
+                _send_outcome_email(
+                    config, target_date, recipients,
+                    status="analysis failed",
+                    body_text=(
+                        f"The scheduled D1 retention analysis for {target_date} "
+                        f"({seg['platform']} / {seg['acquisition_source']}) failed.\n\n"
+                        f"Error: {analysis_error}"
+                    ),
+                    attachment_path=None,
+                    body_is_markdown=False,
+                )
+                console.print(f"[green]✓ failure notice sent to {len(recipients)} recipient(s)[/green]")
+                return
+
+            if report_path is None:
+                console.print(
+                    f"\n[red]Data still not available after {attempts} attempts.[/red]"
+                )
+                if dry_run:
+                    console.print("[yellow]DRY RUN — skipping email send.[/yellow]")
+                    return
+                _send_outcome_email(
+                    config, target_date, recipients,
+                    status="data unavailable",
+                    body_text=(
+                        f"D1 data for {target_date} ({seg['platform']} / "
+                        f"{seg['acquisition_source']}) was still not in the sheet after "
+                        f"{attempts} attempts spaced {interval_min} minutes apart. "
+                        f"No analysis was produced.\n\n"
+                        f"Please check the upstream pipeline that populates app_health_daily."
+                    ),
+                    attachment_path=None,
+                    body_is_markdown=False,
+                )
+                console.print(f"[green]✓ data-unavailable notice sent to {len(recipients)} recipient(s)[/green]")
+                return
+
+            # Success path.
+            console.print("\n[bold green]✓ Analysis succeeded. Preparing email...[/bold green]")
+            if dry_run:
+                console.print(f"[yellow]DRY RUN — would have emailed {report_path.name} to recipients.[/yellow]")
+                return
+            report_text = report_path.read_text(encoding="utf-8")
+            severity = _extract_severity_badge(report_text)
+            _send_outcome_email(
+                config, target_date, recipients,
+                status=severity,
+                body_text=report_text,
+                attachment_path=report_path,
+                body_is_markdown=True,
+            )
+            console.print(
+                f"[bold green]✓ Email sent to {len(recipients)} recipient(s): {severity}[/bold green]"
+            )
+
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def _run_doctor_checks() -> None:
     """Extended preflight for ./tune doctor — verifies deps, imports, files, CLI.
 
@@ -1439,7 +1994,7 @@ def _die(message: str, extra: str = "") -> None:
     raise typer.Exit(code=1)
 
 
-_KNOWN_COMMANDS = {"run", "doctor"}
+_KNOWN_COMMANDS = {"run", "doctor", "schedule"}
 
 
 def main() -> None:

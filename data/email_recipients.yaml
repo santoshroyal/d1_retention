@@ -1,0 +1,24 @@
+# Recipients for the daily D1 retention email sent by `./tune schedule`.
+#
+# Two lists:
+#   recipients          — used by default (intended for repeated testing / dev).
+#   extended_recipients — used when `./tune schedule --prod` is passed
+#                         (intended for daily cron runs that go to the team).
+#
+# Adding or removing an address: edit the relevant list. PM-editable.
+# Emails are sent BCC so individual addresses are not exposed to each other.
+#
+# Engineer-managed plumbing (SMTP host, port, credentials) lives in
+# `config.yaml` under the `email:` key. SMTP credentials are loaded from
+# environment variables — see `.env.example`.
+
+# Default — used for `./tune schedule` and `./tune schedule --dry-run` (testing).
+recipients:
+  - Santoshroyal69@gmail.com
+
+# Extended — used for `./tune schedule --prod` (daily cron run to the team).
+extended_recipients:
+  - Santoshroyal69@gmail.com
+  - abhijeet.pola@timesinternet.in
+  - ritvij.parikh@timesinternet.in
+  - deepika.nidige@timesinternet.in

@@ -16,6 +16,7 @@ dependencies = [
     "rich>=13.9",
     "tabulate>=0.9",
     "typer>=0.13",
+    "markdown>=3.5",
 ]
 
 [tool.hatch.build.targets.wheel]

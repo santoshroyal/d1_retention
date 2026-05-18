@@ -68,3 +68,29 @@ output_template: "outputs/{date}-{basename}.md"
 
 # Friendly model alias used in pre-flight display. Display only.
 model_display_name: "Claude Opus 4.7 (1M context)"
+
+# -----------------------------------------------------------------------------
+# Scheduled daily mode — `./tune schedule`
+# -----------------------------------------------------------------------------
+# The cron entry on the host machine is what actually fires the script;
+# `daily_time_ist` here is informational and should match the cron entry.
+schedule:
+  daily_time_ist: "11:05"
+  retry_attempts: 5
+  retry_interval_minutes: 30
+  target_segment:
+    platform: "android"
+    acquisition_source: "organic"
+
+# Email plumbing for the scheduled mode. Recipients live in
+# `data/email_recipients.yaml` (PM-editable). Credentials come from environment
+# variables — see `.env.example`. Never commit the real `.env`.
+email:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  from_env_var: "TOI_SMTP_FROM"
+  password_env_var: "TOI_SMTP_APP_PASSWORD"
+  # Subject placeholders: {date} = YYYY-MM-DD of the analysed cohort;
+  # {status} = the severity badge on success, or 'data unavailable' /
+  # 'analysis failed' on failure paths.
+  subject_template: "TOI D1 Retention — {date} — {status}"

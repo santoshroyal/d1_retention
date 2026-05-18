@@ -56,6 +56,7 @@ Files fall into four roles. Knowing the role of a file tells you what changing i
 | `data/sheets/app_d1_retention_health_*.csv` | Data | Three D1 cohort pivots (daily / weekly / monthly). Auto-fetched lazily; gitignored. |
 | `data/dict/<sheet>.md` | Engineer-managed | Per-sheet column dictionaries. Primary sheet's dict is appended to the prompt every run; pivot dicts are bundled into `get_rows` responses. |
 | `data/docs/*.md` | **PM-additive** | Methodology + event-context docs (release log, holidays, news events, known incidents). The LLM `load_file()`s them mid-reasoning. PM drops new docs in; engineer pre-populates. |
+| `data/email_recipients.yaml` | **PM** | Recipients list for the daily scheduled email (`./tune schedule`). PM edits freely. SMTP plumbing lives in `config.yaml`; credentials in `.env`. |
 
 ### Code — runs the project, not read as prose
 
@@ -104,6 +105,10 @@ The only project-wide invariant worth restating here, because it is engineer-fac
 | Environment + dependency check | `./tune doctor` |
 | Regenerate the tool catalog after adding/changing a tool | `uv run python scripts/generate_catalog.py` |
 | Switch model for one run | `./tune --model sonnet "..."` (also: `opus`, `haiku`, `gpt-5.5` for Codex) |
+| Test SMTP credentials without spending an LLM call | `./tune schedule --test-email <addr>` |
+| One-shot scheduled run, testing list (`recipients:`) | `./tune schedule` — analyses the most recent COMPLETE D1 cohort (today − 2 IST, because yesterday's `d1_corrected` is not yet populated at 11:05 AM). `--dry-run` skips the email send. |
+| One-shot scheduled run, full team (`extended_recipients:`) | `./tune schedule --prod` — same flow, sends to the extended list. This is what the daily cron entry should invoke. |
+| Cron entry to install for daily 11:05 IST runs | `5 11 * * * cd "<project>" && ./tune schedule --prod >> "logs/schedule-$(date +\%Y-\%m).log" 2>&1` |
 
 The `--verify` flag imports `tune_mcp.py` (which transitively imports every tool file) and parses the playbook for tool calls, validating each against the live registry. Use it as the cheap iteration loop before paying for an LLM run.
 
