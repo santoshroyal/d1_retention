@@ -50,6 +50,37 @@ RETENTION_OFFSETS: dict[str, int] = {
     "d30_corrected": 30,
 }
 
+# Display metadata per retention metric. Used by the orchestrator to
+# substitute placeholder tokens in reports/lite_layout.yaml when emitting
+# the per-retention block in a combined multi-retention report.
+#
+#   horizon         — short label ("D1", "D7", "D30") for block headings.
+#   users_metric    — the dN_users column for the "users" bullet in the
+#                     Retention section of that block.
+#   users_display   — plain-English display name for that users bullet.
+#   primary_display — plain-English display name for the headline retention
+#                     metric in that block.
+RETENTION_DISPLAY: dict[str, dict[str, str]] = {
+    "d1_corrected": {
+        "horizon": "D1",
+        "users_metric": "d1_users",
+        "users_display": "D1 users",
+        "primary_display": "D1 Retention",
+    },
+    "d7_corrected": {
+        "horizon": "D7",
+        "users_metric": "d7_users",
+        "users_display": "D7 users",
+        "primary_display": "D7 Retention",
+    },
+    "d30_corrected": {
+        "horizon": "D30",
+        "users_metric": "d30_users",
+        "users_display": "D30 users",
+        "primary_display": "D30 Retention",
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared constants — used across multiple tool files.

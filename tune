@@ -762,16 +762,26 @@ def _run_scheduled_attempt(
 ) -> Path | None:
     """One scheduled attempt: refresh sheets, check data, run analysis if present.
 
-    Prints the same preflight banner, sheet status, inline report, and run
-    summary as `./tune run` so the operator sees a complete trace.
+    For `report_variant="lite"` (and `"both"`), the attempt checks data
+    presence for all three retention cohorts (D1, D7, D30). The attempt
+    proceeds only if D1's cohort data is present — D1 is the recency-bound
+    one. D7 and D30 cohorts are 7+ and 30+ days old; if they're missing,
+    that is a real data gap, not a recency wait, so retrying will not help.
+    Missing D7 / D30 blocks are marked inline so the LLM emits a stub.
 
-    Returns the report path on success, or None when the target cohort's
-    `d1_corrected` is still NaN (the outer retry loop handles re-attempts).
+    For `report_variant="deep"`, behaviour is unchanged — single D1 cohort
+    check, single report.
+
+    Returns the report path on success, or None when the D1 cohort's
+    retention column is still NaN (the outer retry loop handles re-attempts).
     """
     from tools._common import _SHEET_CACHE
 
     seg = config["schedule"]["target_segment"]
-    query = f"{target_date.strftime('%B %d')} {seg['platform']} {seg['acquisition_source']} D1"
+    query = (
+        f"{target_date.strftime('%B %d')} {seg['platform']} "
+        f"{seg['acquisition_source']} retention"
+    )
 
     # 1. Force-refresh every pre_fetch sheet and print the per-sheet status
     #    (same display as `./tune run --refresh`).
@@ -779,11 +789,33 @@ def _run_scheduled_attempt(
     # Clear in-memory DataFrame cache so the next read sees the refreshed file.
     _SHEET_CACHE.clear()
 
-    # 2. Silent data-presence check against the freshly refreshed sheet.
-    if not _check_data_present(target_date, config):
+    # 2. Build the per-block status list. All three variants now support
+    # multi-retention combined reports: check all three cohorts (D1, D7,
+    # D30). Only D1's data is required to proceed — D1 is the recency-bound
+    # one. D7 / D30 cohorts are 7+ and 30+ days old; if their data is
+    # missing, that is a real data gap, not a recency wait, so retrying
+    # will not help. Missing D7 / D30 blocks are marked inline so the LLM
+    # emits a data-missing stub.
+    blocks: list[dict[str, Any]] = []
+    for rm in ("d1_corrected", "d7_corrected", "d30_corrected"):
+        cohort_day = _target_cohort_date(rm)
+        present = _check_data_present(cohort_day, rm, config=config)
+        blocks.append(
+            {
+                "retention_metric": rm,
+                "cohort_day": cohort_day.isoformat(),
+                "data_present": present,
+            }
+        )
+        status = "[green]✓[/green]" if present else "[yellow]missing[/yellow]"
+        console.print(
+            f"  {status} {rm} cohort {cohort_day} "
+            f"({seg['platform']}/{seg['acquisition_source']})"
+        )
+    # D1 is the gating block. If D1's data is missing, retry; D7 / D30
+    # missing is acceptable and surfaces as a stub in the email.
+    if not blocks[0]["data_present"]:
         return None
-
-    console.print(f"  [green]✓[/green] data found for {target_date}. Query: {query!r}")
 
     # 3. Resolve provider + env preflight (same as run()).
     resolved_model, model_display, provider = _resolve_model(None, config)
@@ -791,7 +823,10 @@ def _run_scheduled_attempt(
     prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
     sheet_stats = _compute_sheet_stats()
     user_message = _build_user_message(
-        prose=prose, pm_query=query, report_variant=report_variant
+        prose=prose,
+        pm_query=query,
+        report_variant=report_variant,
+        blocks=blocks,
     )
 
     # 4. Print the full preflight banner (playbook, data, extra docs, model,
@@ -866,7 +901,7 @@ def _send_outcome_email(
 ) -> None:
     """Compose subject from template + send the final outcome email (success or failure)."""
     subject_template = config["email"].get(
-        "subject_template", "<Agentic D1 Report> {platform}  {date} · {status}"
+        "subject_template", "<Agentic Retention Report> {platform}  {date} · {status}"
     )
     seg = config["schedule"]["target_segment"]
     subject = subject_template.format(
@@ -1632,48 +1667,210 @@ def _validate_report_variant(name: str | None) -> str:
     return resolved
 
 
-def _load_report_section(variant: str) -> str:
-    """Assemble the report-shape block appended to the user message for `variant`."""
+def _substitute_layout_placeholders(layout_text: str, retention_metric: str) -> str:
+    """Substitute __primary_metric__ / __primary_display__ / __users_metric__ /
+    __users_display__ in the lite layout YAML for one retention block."""
+    from tools._common import RETENTION_DISPLAY
+
+    d = RETENTION_DISPLAY[retention_metric]
+    return (
+        layout_text
+        .replace("__primary_metric__", retention_metric)
+        .replace("__primary_display__", d["primary_display"])
+        .replace("__users_metric__", d["users_metric"])
+        .replace("__users_display__", d["users_display"])
+    )
+
+
+def _default_lite_blocks() -> list[dict[str, Any]]:
+    """Default block list used by interactive `./tune --report lite` runs.
+
+    Targets the three standard retention horizons with cohort days from
+    `_target_cohort_date(metric)`. Assumes data is present (no pre-check) —
+    interactive runs let the LLM discover data gaps via its own tool calls.
+    Scheduled runs override this by passing explicit blocks with
+    pre-checked `data_present` states.
+    """
+    blocks: list[dict[str, Any]] = []
+    for rm in ("d1_corrected", "d7_corrected", "d30_corrected"):
+        cohort_day = _target_cohort_date(rm)
+        blocks.append(
+            {
+                "retention_metric": rm,
+                "cohort_day": cohort_day.isoformat(),
+                "data_present": True,
+            }
+        )
+    return blocks
+
+
+def _build_lite_blocks_prompt(
+    blocks: list[dict[str, Any]],
+    layout_text: str,
+    template_text: str,
+) -> str:
+    """Assemble the lite-variant report-shape block for one or more retention blocks."""
+    from tools._common import RETENTION_DISPLAY
+
+    parts: list[str] = []
+    parts.append("Emit one retention block per entry in the list below, in order. ")
+    parts.append("Each block analyses its own cohort day independently — no ")
+    parts.append("cross-references between blocks. The shared shape and rules ")
+    parts.append("are in the lite template at the end of this section.\n\n")
+
+    for i, b in enumerate(blocks, start=1):
+        rm = b["retention_metric"]
+        cohort_day = b["cohort_day"]
+        present = b.get("data_present", True)
+        d = RETENTION_DISPLAY[rm]
+
+        parts.append("---\n\n")
+        parts.append(
+            f"### Block {i} of {len(blocks)} — {d['horizon']} ({rm}), "
+            f"cohort day {cohort_day}\n\n"
+        )
+
+        if not present:
+            parts.append(
+                f"**DATA MISSING for this block.** The `{rm}` column for the "
+                f"{cohort_day} install cohort was not present in the sheet at "
+                f"run time. Emit only the data-missing stub for this block "
+                f"(per the template's 'Three retention blocks per report' "
+                f"section) and proceed to the next block.\n\n"
+            )
+            continue
+
+        substituted = _substitute_layout_placeholders(layout_text, rm)
+        parts.append("Layout for this block (placeholders already substituted):\n\n")
+        parts.append("```yaml\n")
+        parts.append(f"{substituted}\n")
+        parts.append("```\n\n")
+
+    parts.append("---\n\n")
+    parts.append("## Lite report template\n\n")
+    parts.append(template_text)
+
+    return "".join(parts)
+
+
+def _build_deep_blocks_prompt(
+    blocks: list[dict[str, Any]],
+    template_text: str,
+) -> str:
+    """Assemble the deep-variant report-shape block for one or more retention blocks.
+
+    Mirrors `_build_lite_blocks_prompt` but for the deep variant. The deep
+    template prose is generic — the LLM substitutes `<DN>` per block. This
+    helper provides the per-block headers and the list of cohort days /
+    retention metrics the LLM must analyse, then appends the shared deep
+    template prose at the end.
+    """
+    from tools._common import RETENTION_DISPLAY
+
+    parts: list[str] = []
+    parts.append("Emit one deep retention block per entry in the list below, in ")
+    parts.append("order. Each block is a complete deep analysis — status card on ")
+    parts.append("top, free-form diagnosis below — for its own retention horizon ")
+    parts.append("and cohort day. No cross-references between blocks. The shared ")
+    parts.append("shape and rules are in the deep template at the end of this ")
+    parts.append("section.\n\n")
+
+    for i, b in enumerate(blocks, start=1):
+        rm = b["retention_metric"]
+        cohort_day = b["cohort_day"]
+        present = b.get("data_present", True)
+        d = RETENTION_DISPLAY[rm]
+
+        parts.append("---\n\n")
+        parts.append(
+            f"### Block {i} of {len(blocks)} — {d['horizon']} ({rm}), "
+            f"cohort day {cohort_day}\n\n"
+        )
+
+        if not present:
+            parts.append(
+                f"**DATA MISSING for this block.** The `{rm}` column for the "
+                f"{cohort_day} install cohort was not present in the sheet at "
+                f"run time. Emit only the data-missing stub for this block "
+                f"(per the template's 'Three retention blocks per report' "
+                f"section) and proceed to the next block.\n\n"
+            )
+            continue
+
+        parts.append(f"Retention metric for this block: `{rm}`\n")
+        parts.append(f"Horizon label to use in the card row (`<DN> Retention`): **{d['horizon']}**\n")
+        parts.append(f"Cohort day: **{cohort_day}**\n")
+        parts.append(
+            f"Forcing rule: your first MCP call for this block must be "
+            f"`compare_to_baseline(date='{cohort_day}', metric='{rm}', "
+            f"platform='android', acquisition_source='organic', "
+            f"baseline_kind='stable')` — this sets the severity badge for "
+            f"`<!-- severity_{d['horizon'].lower()}: ... -->`.\n\n"
+        )
+
+    parts.append("---\n\n")
+    parts.append("## Deep report template\n\n")
+    parts.append(template_text)
+
+    return "".join(parts)
+
+
+def _load_report_section(
+    variant: str,
+    blocks: list[dict[str, Any]] | None = None,
+) -> str:
+    """Assemble the report-shape block appended to the user message for `variant`.
+
+    `blocks` is a list of dicts with keys `retention_metric`, `cohort_day`
+    (ISO date string), and `data_present` (bool). When `blocks` is None,
+    `_default_lite_blocks()` provides the standard three-retention list.
+    Applies to both lite and deep variants — both now support multi-block
+    emit.
+    """
+    block_list = blocks if blocks is not None else _default_lite_blocks()
+
     if variant == "deep":
-        return DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+        template = DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+        return _build_deep_blocks_prompt(block_list, template)
 
     if variant == "lite":
         layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
         template = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
-        return (
-            "## Layout for this run (which metrics to include and in what order)\n\n"
-            "```yaml\n"
-            f"{layout}\n"
-            "```\n\n"
-            f"{template}"
-        )
+        return _build_lite_blocks_prompt(block_list, layout, template)
 
-    # variant == "both"
+    # variant == "both" — emit the multi-block lite section grid first, then
+    # the multi-block deep card + diagnosis below.
     layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
-    lite = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
-    deep = DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    lite_template = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    deep_template = DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    lite_section = _build_lite_blocks_prompt(block_list, layout, lite_template)
+    deep_section = _build_deep_blocks_prompt(block_list, deep_template)
     return (
-        "Emit BOTH a lite section grid AND a deep diagnostic report for this run. "
-        "Order:\n\n"
-        "1. The lite section grid first (use the lite layout and template below).\n"
+        "Emit BOTH a multi-block lite report AND a multi-block deep report for "
+        "this run. Order:\n\n"
+        "1. The lite retention blocks first (D1, D7, D30 in order — use the "
+        "lite layout and template below).\n"
         "2. A horizontal rule (`---`).\n"
-        "3. The deep status card and full diagnosis (use the deep template below).\n\n"
-        "The same numbers can appear in both halves — the lite half is for fast "
-        "scanning, the deep half is for full reasoning.\n\n"
+        "3. The deep retention blocks next (D1, D7, D30 in order — full status "
+        "card + diagnosis per block, using the deep template below).\n\n"
+        "The same numbers can appear in both halves — the lite half is for "
+        "fast scanning, the deep half is for full reasoning.\n\n"
         "---\n\n"
-        "## Lite — layout for this run\n\n"
-        "```yaml\n"
-        f"{layout}\n"
-        "```\n\n"
-        "## Lite — template\n\n"
-        f"{lite}\n\n"
+        "## Lite — multi-retention blocks for this run\n\n"
+        f"{lite_section}\n\n"
         "---\n\n"
-        "## Deep — template\n\n"
-        f"{deep}"
+        "## Deep — multi-retention blocks for this run\n\n"
+        f"{deep_section}"
     )
 
 
-def _build_user_message(*, prose: str, pm_query: str = "", report_variant: str = "deep") -> str:
+def _build_user_message(
+    *,
+    prose: str,
+    pm_query: str = "",
+    report_variant: str = "deep",
+    blocks: list[dict[str, Any]] | None = None,
+) -> str:
     parts = [
         "# PM playbook (the prose to follow)",
         "",
@@ -1683,7 +1880,7 @@ def _build_user_message(*, prose: str, pm_query: str = "", report_variant: str =
         "",
         "# Report shape for this run",
         "",
-        _load_report_section(report_variant),
+        _load_report_section(report_variant, blocks=blocks),
         "",
         "---",
         "",

@@ -1,15 +1,24 @@
-# Layout for the LITE D1 retention report.
+# Layout for the LITE retention report.
 #
-# PM-editable. Each section becomes one `## <name>` heading in the report.
-# Inside a section, metrics are emitted in this order:
-#   1. The Primary metric first.
-#   2. Then Bullet metrics in ascending `bullet_sort` order.
+# PM-editable. Each section becomes one `## <name>` heading inside every
+# retention block in the email. The orchestrator emits this layout once
+# per retention level (D1, D7, D30 by default), substituting the four
+# placeholder tokens in the Retention section per block:
 #
-# To change the report layout, edit this file (add / remove / reorder metrics
-# or sections) and re-run `./tune --report lite`. No engineer involvement
-# needed as long as the column names you reference exist in
+#   __primary_metric__    →  d1_corrected | d7_corrected | d30_corrected
+#   __primary_display__   →  "D1 Retention" | "D7 Retention" | "D30 Retention"
+#   __users_metric__      →  d1_users | d7_users | d30_users
+#   __users_display__     →  "D1 users" | "D7 users" | "D30 users"
+#
+# To change the report layout, edit this file (add / remove / reorder
+# metrics or sections) and re-run `./tune --report lite`. No engineer
+# involvement needed as long as the column names you reference exist in
 # `data/sheets/app_health_daily.csv` — check `data/dict/app_health_daily.md`
 # for the authoritative column list.
+#
+# The non-retention sections (Engagement, Frequency, Grow Net Installs)
+# are identical across all three retention blocks. The Retention section
+# uses the placeholders above so the same file drives all three blocks.
 
 sections:
   - name: Engagement
@@ -38,17 +47,17 @@ sections:
         kind: bullet
         bullet_sort: 1
 
-  - name: Retention (D0 to D7)
+  - name: Retention
     metrics:
-      - column: d1_corrected
-        display_name: D1 Retention
+      - column: __primary_metric__
+        display_name: __primary_display__
         kind: primary
       - column: d0_uninstalls
         display_name: D0 uninstalls
         kind: bullet
         bullet_sort: 1
-      - column: d1_users
-        display_name: D1 users
+      - column: __users_metric__
+        display_name: __users_display__
         kind: bullet
         bullet_sort: 2
       - column: pct_d0_login

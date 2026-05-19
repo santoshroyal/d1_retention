@@ -96,4 +96,4 @@ email:
   #   {status}   = the severity badge on success ('🟢 NORMAL', '🟡 FLAG',
   #                '🔴 ALERT', etc.), or 'data unavailable' /
   #                'analysis failed' on the failure paths.
-  subject_template: "<Agentic D1 Report> {platform}  {date} · {status}"
+  subject_template: "<Agentic Retention Report> {platform}  {date} · {status}"
