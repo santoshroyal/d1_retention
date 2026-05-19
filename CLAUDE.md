@@ -50,7 +50,10 @@ Files fall into four roles. Knowing the role of a file tells you what changing i
 
 | Path | Owner | Purpose |
 |---|---|---|
-| `d1-retention-analysis.md` | **PM** | The playbook. Forcing rule, diagnostic flow, report shape, output language. Loaded into the prompt every run. Methodology rules specific to D1 analysis live here. |
+| `d1-retention-analysis.md` | **PM** | The playbook. Forcing rule, diagnostic flow, output language. Loaded into the prompt every run. Methodology rules specific to D1 analysis live here. Report shape lives in `reports/` and is selected at run time via `--report`. |
+| `reports/deep.md` | Engineer | Deep-variant report template (status card + diagnosis). Appended to the prompt when `--report deep` (the default). |
+| `reports/lite.md` | Engineer | Lite-variant report template (4-section metric dashboard). Appended when `--report lite`. |
+| `reports/lite_layout.yaml` | **PM** | Which metrics the lite report includes and in what order. PM edits freely — add / remove / reorder metrics. Used only by `--report lite` and `--report both`. |
 | `config.yaml` | Engineer | System preamble, model selection, output template. Engineer-owned non-negotiable rules. |
 | `data/sheets/app_health_daily.csv` | Data | Primary daily fact table. Checked into the repo so first clone works without network. The daily refresh pipeline keeps it current. |
 | `data/sheets/app_d1_retention_health_*.csv` | Data | Three D1 cohort pivots (daily / weekly / monthly). Auto-fetched lazily; gitignored. |
@@ -102,12 +105,15 @@ The only project-wide invariant worth restating here, because it is engineer-fac
 | Validate playbook tool calls (sub-second, no LLM) | `./tune --verify` |
 | Inspect the prompt that would go to the LLM | `./tune --dry-run "<query>"` |
 | Real run | `./tune "<question>"` or `./tune` (uses playbook only) |
+| Real run, lite report | `./tune --report lite` (or add a question) — 4-section metric dashboard instead of the diagnostic narrative |
+| Real run, both report variants | `./tune --report both` — lite section grid first, then the deep card and diagnosis |
 | Environment + dependency check | `./tune doctor` |
 | Regenerate the tool catalog after adding/changing a tool | `uv run python scripts/generate_catalog.py` |
 | Switch model for one run | `./tune --model sonnet "..."` (also: `opus`, `haiku`, `gpt-5.5` for Codex) |
 | Test SMTP credentials without spending an LLM call | `./tune schedule --test-email <addr>` |
-| One-shot scheduled run, testing list (`recipients:`) | `./tune schedule` — analyses the most recent COMPLETE D1 cohort (today − 2 IST, because yesterday's `d1_corrected` is not yet populated at 11:05 AM). `--dry-run` skips the email send. |
-| One-shot scheduled run, full team (`extended_recipients:`) | `./tune schedule --prod` — same flow, sends to the extended list. This is what the daily cron entry should invoke. |
+| One-shot scheduled run, testing list (`recipients:`) | `./tune schedule` — analyses the most recent COMPLETE D1 cohort (today − 2 IST, because yesterday's `d1_corrected` is not yet populated at 11:05 AM). Emits the lite 4-section metric dashboard by default. `--dry-run` skips the email send. |
+| One-shot scheduled run, full team (`extended_recipients:`) | `./tune schedule --prod` — same flow, sends to the extended list. This is what the daily cron entry invokes. Lite is the default daily shape. |
+| Scheduled run with the deep diagnostic instead of the lite dashboard | `./tune schedule --prod --report deep` — opt-in override when you want the full 6-row card and diagnostic narrative in the daily email. |
 | Cron entry to install for daily 11:05 IST runs | `5 11 * * * cd "<project>" && ./tune schedule --prod >> "logs/schedule-$(date +\%Y-\%m).log" 2>&1` |
 
 The `--verify` flag imports `tune_mcp.py` (which transitively imports every tool file) and parses the playbook for tool calls, validating each against the live registry. Use it as the cheap iteration loop before paying for an LLM run.
@@ -221,11 +227,25 @@ When changing the column model: edit the dictionary first; cascade to the playbo
 
 ## Recent architectural state
 
-These changes landed during the most recent design session:
+The most recent design session landed two big threads on top of the v1.3 query-driven architecture.
 
-- The inlined Android-organic slice (180 days × 28 cols) was removed from the prompt. User-message size dropped from ~109k chars to ~16k.
-- `get_rows` was added so the LLM can fetch any segment / window on demand. 30-day default window, 400-row hard cap, 11-column standard projection, named-column override.
-- The playbook gained the `d1_corrected` forcing rule, the no-duplicate-calls rule, the `get_rows` overlap rule, the comparator-platform symmetry, and a window-from-phrasing table.
-- `_render_inlined_sheet` was renamed to `_compute_sheet_stats` (the slice work is gone; only banner stats remain).
-- `config.yaml` lost its `inline_data:` block (40 lines of dead config).
-- README gained: a "How to write a tool call in your prose" section naming the convention; a worked end-to-end example for authoring a new tool; clearer PM/engineer boundary headers across files.
+**Daily scheduled email mode (`./tune schedule`).**
+- New Typer command. Refreshes every `pre_fetch: true` sheet, picks the most recent install cohort with complete `d1_corrected` (today − 2 IST, because yesterday's return day is not yet over at 11:05 AM), runs the analysis, and emails the report.
+- Retries up to `schedule.retry_attempts` times at `schedule.retry_interval_minutes`-minute intervals when the cohort's data is still missing from the sheet. After the last failed attempt, sends a "data unavailable" notice instead of the report.
+- `data/email_recipients.yaml` holds two PM-editable lists: `recipients:` (testing) and `extended_recipients:` (prod). `--prod` selects the extended list; default selects the testing list.
+- SMTP plumbing lives in `config.yaml` under `email:`. Credentials come from `.env` (gitignored) via `TOI_SMTP_FROM` and `TOI_SMTP_APP_PASSWORD`. `--test-email <addr>` sends a SMTP sanity ping without running the LLM.
+- `fcntl.flock` on `logs/schedule.lock` makes the loop safe against overlapping cron firings.
+
+**Multi-variant report system (`--report lite|deep|both`).**
+- The playbook (`d1-retention-analysis.md`) no longer hard-codes a single report shape. Methodology, diagnostic checklist, thresholds, and output-language rules stay; the report shape moved out.
+- `reports/deep.md` carries the deep variant — the 6-row status card plus Diagnosis / Evidence / Context & Flags / What to watch next prose. Same content as before, now in its own file.
+- `reports/lite.md` carries the lite variant — severity banner, then four sections (Engagement / Frequency / Grow Net Installs / Retention) with a colored dot per metric and tiered impact prose. Built for daily email reading.
+- `reports/lite_layout.yaml` is **PM-editable** — controls which metrics the lite report shows and in what order. Engineers stay out of this file; PMs can add, remove, or reorder metrics freely.
+- `tune` validates the variant, loads the right files, and concatenates them after the playbook in the user message. The dispatch lives in `_validate_report_variant` and `_load_report_section`.
+- The schedule command **defaults to lite**; the interactive `run` command defaults to deep. Override with `--report` either way.
+
+**Email rendering improvements.**
+- The severity badge is conveyed via a hidden HTML comment (`<!-- severity: 🔴 ALERT -->`) at the top of every report. `_extract_severity_badge` reads it to set the email subject. The visible body banner is a plain title — no duplicate "ALERT" between subject and body.
+- `_render_markdown_to_html` tints the body's first H1 (when an emoji is present) as a colored pill — red for ALERT, amber for FLAG, green for NORMAL. Inline styles, so Gmail does not strip them. Section headers use a gray pill treatment for visibility on mobile.
+- `_strip_preamble` defensively discards any LLM narration above the banner, so leaked "I have enough evidence…" sentences never reach the email.
+- Subject template is `<Agentic D1 Report> {platform}  {date} · {status}` — for example `<Agentic D1 Report> Android  2026-05-16 · 🔴 ALERT`.

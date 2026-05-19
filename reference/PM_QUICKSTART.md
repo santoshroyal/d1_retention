@@ -36,9 +36,25 @@ You can also pass a question:
 
 ## Tuning the analysis
 
-The whole tuning loop is one file: `d1-retention-analysis.md`. Open it in any editor, change the prose — hypothesis, diagnostic steps, report shape — and re-run `./tune`. That is the entire workflow.
+The tuning loop is mostly one file: `d1-retention-analysis.md`. Open it in any editor, change the prose — hypothesis, diagnostic steps, output language — and re-run `./tune`. That is the workflow for changing methodology.
 
 Optional context lives in `data/docs/` (release notes, holidays, news events, methodology). The LLM loads what it needs on its own; you do not have to reference them.
+
+## Picking the report shape
+
+There are two report variants. Choose with `--report`:
+
+| Command | What you get |
+|---|---|
+| `./tune` or `./tune --report deep` | Default. A 6-row status card on top (cohort, D1 number, deltas, severity, primary driver, iOS comparison) followed by a free-form diagnostic narrative (Diagnosis / Evidence / Context / What to watch next). For when you want full reasoning. |
+| `./tune --report lite` | A 4-section metric dashboard (Engagement / Frequency / Grow Net Installs / Retention). One line per metric: value, delta vs typical weekday, color dot for impact on D1, and a short impact explanation. For daily reading and email digests. |
+| `./tune --report both` | The lite dashboard first, then the deep card and diagnosis below. For when you want both quick-scan and full reasoning in one report. |
+
+The shape of each variant is defined in `reports/`:
+
+- `reports/deep.md` — the deep variant template (engineer-managed; do not edit casually).
+- `reports/lite.md` — the lite variant template (engineer-managed; do not edit casually).
+- `reports/lite_layout.yaml` — **which metrics the lite report shows and in what order. PM-editable.** Add, remove, or reorder metrics in this file; the next `./tune --report lite` picks up the change immediately.
 
 ## Where things go
 

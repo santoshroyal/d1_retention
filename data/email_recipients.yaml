@@ -18,7 +18,9 @@ recipients:
 
 # Extended — used for `./tune schedule --prod` (daily cron run to the team).
 extended_recipients:
-  - Santoshroyal69@gmail.com
   - abhijeet.pola@timesinternet.in
   - ritvij.parikh@timesinternet.in
   - deepika.nidige@timesinternet.in
+  - toiandroiddev@timesinternet.in
+  - arpit.toshniwal@timesinternet.in
+  - amit.monga@timesinternet.in

@@ -53,6 +53,12 @@ CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 MCP_SERVER_PATH = PROJECT_ROOT / "tune_mcp.py"
 
+REPORTS_DIR = PROJECT_ROOT / "reports"
+LITE_LAYOUT_PATH = REPORTS_DIR / "lite_layout.yaml"
+LITE_TEMPLATE_PATH = REPORTS_DIR / "lite.md"
+DEEP_TEMPLATE_PATH = REPORTS_DIR / "deep.md"
+VALID_REPORT_VARIANTS = ("lite", "deep", "both")
+
 def _allowed_mcp_tools() -> str:
     """Derive the --allowed-tools list from the live MCP registry.
 
@@ -175,6 +181,16 @@ def run(
             "mid-day and you want this run to use the latest."
         ),
     ),
+    report: str = typer.Option(
+        "deep",
+        "--report",
+        help=(
+            "Which report shape to emit. 'deep' (default) = the 6-row status card "
+            "plus full diagnostic narrative. 'lite' = the 4-section metric dashboard "
+            "(see reports/lite_layout.yaml). 'both' = lite section grid first, then "
+            "the deep card and diagnosis below."
+        ),
+    ),
 ) -> None:
     """Run the analysis end-to-end. An optional one-shot question may follow."""
     config = _load_config()
@@ -182,6 +198,7 @@ def run(
     if verify:
         _run_verify_checks()
         return
+    report_variant = _validate_report_variant(report)
     _ensure_environment(
         cli_required=None if dry_run else provider,
     )
@@ -189,7 +206,9 @@ def run(
     pm_query = " ".join(query).strip() if query else ""
     prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
     sheet_stats = _compute_sheet_stats()
-    user_message = _build_user_message(prose=prose, pm_query=pm_query)
+    user_message = _build_user_message(
+        prose=prose, pm_query=pm_query, report_variant=report_variant
+    )
 
     if dry_run:
         console.print("[bold]── prompt preview (dry run) ──[/bold]\n")
@@ -232,6 +251,7 @@ def run(
             progress=progress,
         )
 
+    result["text"] = _strip_preamble(result["text"])
     output_path.write_text(result["text"], encoding="utf-8")
     _update_latest_symlink(output_path)
 
@@ -303,6 +323,15 @@ def schedule(
             "SMTP credentials, then exit. Skips the data check and the LLM call."
         ),
     ),
+    report: str = typer.Option(
+        "lite",
+        "--report",
+        help=(
+            "Which report shape the scheduled run produces. 'lite' (default — "
+            "the 4-section metric dashboard, what the daily email expects), "
+            "'deep' (the 6-row card + full diagnosis), or 'both'."
+        ),
+    ),
 ) -> None:
     """Daily scheduled run — analyse the most recent COMPLETE D1 cohort and email the report.
 
@@ -323,8 +352,9 @@ def schedule(
         _validate_smtp_env(config)
         _send_test_email(config, test_email)
         return
+    report_variant = _validate_report_variant(report)
     _validate_schedule_config(config, require_smtp=not dry_run, extended=prod)
-    _run_schedule_loop(config, dry_run=dry_run, extended=prod)
+    _run_schedule_loop(config, dry_run=dry_run, extended=prod, report_variant=report_variant)
 
 
 def _load_env_file() -> None:
@@ -467,6 +497,13 @@ def _check_data_present(target_date, config: dict[str, Any]) -> bool:
     return bool(pd.notna(value))
 
 
+_BANNER_TINTS = {
+    "🔴": {"fg": "#c0392b", "bg": "#fdecea"},  # alert — red
+    "🟡": {"fg": "#8a6d0a", "bg": "#fff8d9"},  # flag  — amber
+    "🟢": {"fg": "#1f7a3a", "bg": "#e9f5ec"},  # normal — green
+}
+
+
 def _render_markdown_to_html(md_text: str) -> str:
     """Convert the report markdown into a self-contained HTML document for the email body."""
     import markdown
@@ -475,17 +512,50 @@ def _render_markdown_to_html(md_text: str) -> str:
         md_text,
         extensions=["tables", "fenced_code", "sane_lists"],
     )
-    return (
-        '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+
+    # Tint the first <h1> as a colored severity pill based on the leading emoji.
+    # Gmail strips some <style> rules unpredictably, so the pill uses inline styles.
+    def _tint_banner(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        tint = next(
+            (v for k, v in _BANNER_TINTS.items() if k in inner),
+            None,
+        )
+        if tint is None:
+            return match.group(0)
+        style = (
+            "display:block;font-size:15px;font-weight:600;line-height:1.45;"
+            "margin:0 0 18px 0;padding:10px 14px;border-radius:4px;"
+            f"border-left:4px solid {tint['fg']};background:{tint['bg']};color:{tint['fg']};"
+        )
+        return f'<div style="{style}">{inner}</div>'
+
+    body_html = re.sub(r"<h1>(.*?)</h1>", _tint_banner, body_html, count=1, flags=re.DOTALL)
+
+    css = (
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-        "max-width:760px;margin:24px auto;padding:0 16px;color:#222;line-height:1.55;}"
-        "h1,h2,h3{color:#111;}"
-        "table{border-collapse:collapse;margin:12px 0;}"
+        "max-width:760px;margin:24px auto;padding:0 16px;color:#222;line-height:1.55;font-size:14px;}"
+        "h1{font-size:17px;font-weight:600;color:#111;margin:0 0 10px 0;}"
+        "h2{font-size:14px;font-weight:700;color:#1f2937;text-transform:uppercase;letter-spacing:0.08em;"
+        "margin:28px 0 12px 0;padding:6px 12px;background:#eef0f3;border-left:3px solid #1f2937;"
+        "border-radius:3px;}"
+        "h3{font-size:14px;font-weight:600;color:#111;margin:14px 0 6px 0;}"
+        "p{margin:6px 0 10px 0;}"
+        "ul{padding-left:20px;margin:6px 0 12px 0;}"
+        "li{margin:10px 0;}"
+        "li > p{margin:4px 0;}"
+        "strong{color:#111;}"
+        "table{border-collapse:collapse;margin:12px 0;font-size:13px;}"
         "th,td{border:1px solid #ddd;padding:6px 10px;text-align:left;}"
         "th{background:#f4f4f4;}"
-        "code{background:#f4f4f4;padding:1px 4px;border-radius:3px;}"
-        "hr{border:none;border-top:1px solid #eee;margin:18px 0;}"
+        "code{background:#f4f4f4;padding:1px 4px;border-radius:3px;font-size:13px;}"
+        "hr{border:none;border-top:1px solid #eee;margin:20px 0;}"
         "blockquote{border-left:3px solid #ccc;margin:12px 0;padding:4px 12px;color:#555;}"
+        "em{color:#666;}"
+    )
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+        f"{css}"
         "</style></head><body>"
         f"{body_html}"
         "</body></html>"
@@ -557,31 +627,61 @@ def _send_test_email(config: dict[str, Any], recipient: str) -> None:
         _die(f"failed to send test email: {type(e).__name__}: {e}")
 
 
-def _extract_severity_badge(report_text: str) -> str:
-    """Parse the severity badge ('🔴 ALERT', '🟡 FLAG', etc.) from the first non-empty line of the report.
+def _strip_preamble(report_text: str) -> str:
+    """Discard any LLM narration above the report banner.
 
-    The line typically starts with markdown heading markers (`#`) which we
-    strip before matching. The badge may be followed by separators like `·`.
+    The report templates forbid preamble above the severity marker, but the
+    LLM occasionally leaks a sentence like "I have all the data needed.
+    Writing the lite report now." Scan for the first line containing either
+    a severity-badge marker or a markdown heading (`#`); discard every line
+    above it. Falls back to the original text if neither marker is found
+    (so we never wipe a report that does not match either shape).
+    """
+    if not report_text.strip():
+        return report_text
+    badge_re = re.compile(
+        r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)"
+    )
+    lines = report_text.splitlines()
+    for i, line in enumerate(lines):
+        if badge_re.search(line) or line.lstrip().startswith("#"):
+            # Preserve the original trailing-newline character if there was one.
+            trailing = "\n" if report_text.endswith("\n") else ""
+            return "\n".join(lines[i:]) + trailing
+    return report_text
+
+
+def _extract_severity_badge(report_text: str) -> str:
+    """Parse the severity badge ('🔴 ALERT', '🟡 FLAG', etc.) from near the top of the report.
+
+    The report template forbids preamble above the banner, but the LLM occasionally
+    leaks a "pulling it together" line or a horizontal rule. Scan the first 20
+    non-empty lines (after stripping any leading markdown heading markers) for the
+    badge pattern, rather than locking onto line 1. The badge always sits near the
+    top of any valid report, so 20 lines is a generous safety margin.
     """
     if not report_text.strip():
         return "unknown"
+    badge_re = re.compile(
+        r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)"
+    )
+    seen = 0
     for line in report_text.splitlines():
-        # Strip leading markdown heading markers and whitespace.
         stripped = line.lstrip("#").strip()
         if not stripped:
             continue
-        m = re.match(
-            r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)",
-            stripped,
-        )
+        m = badge_re.search(stripped)
         if m:
             return re.sub(r"\s+", " ", m.group(1))
-        # Stop after the first non-empty line — badge is always at the top.
-        break
+        seen += 1
+        if seen >= 20:
+            break
     return "unknown"
 
 
-def _run_scheduled_attempt(config: dict[str, Any], target_date) -> Path | None:
+def _run_scheduled_attempt(
+    config: dict[str, Any], target_date, *, report_variant: str = "deep"
+) -> Path | None:
     """One scheduled attempt: refresh sheets, check data, run analysis if present.
 
     Prints the same preflight banner, sheet status, inline report, and run
@@ -612,7 +712,9 @@ def _run_scheduled_attempt(config: dict[str, Any], target_date) -> Path | None:
     _ensure_environment(cli_required=provider)
     prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
     sheet_stats = _compute_sheet_stats()
-    user_message = _build_user_message(prose=prose, pm_query=query)
+    user_message = _build_user_message(
+        prose=prose, pm_query=query, report_variant=report_variant
+    )
 
     # 4. Print the full preflight banner (playbook, data, extra docs, model,
     #    PM query) — same as the interactive `./tune` flow.
@@ -646,6 +748,7 @@ def _run_scheduled_attempt(config: dict[str, Any], target_date) -> Path | None:
             progress=progress,
         )
 
+    result["text"] = _strip_preamble(result["text"])
     output_path.write_text(result["text"], encoding="utf-8")
     _update_latest_symlink(output_path)
 
@@ -685,9 +788,15 @@ def _send_outcome_email(
 ) -> None:
     """Compose subject from template + send the final outcome email (success or failure)."""
     subject_template = config["email"].get(
-        "subject_template", "TOI D1 Retention — {date} — {status}"
+        "subject_template", "<Agentic D1 Report> {platform}  {date} · {status}"
     )
-    subject = subject_template.format(date=target_date, status=status)
+    seg = config["schedule"]["target_segment"]
+    subject = subject_template.format(
+        date=target_date,
+        status=status,
+        platform=str(seg["platform"]).title(),
+        acquisition_source=seg["acquisition_source"],
+    )
     if body_is_markdown:
         html_body = _render_markdown_to_html(body_text)
     else:
@@ -704,7 +813,13 @@ def _send_outcome_email(
     )
 
 
-def _run_schedule_loop(config: dict[str, Any], *, dry_run: bool, extended: bool = False) -> None:
+def _run_schedule_loop(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    extended: bool = False,
+    report_variant: str = "deep",
+) -> None:
     """Outer retry loop. Acquires a lock so two cron firings cannot overlap."""
     import fcntl
 
@@ -721,7 +836,7 @@ def _run_schedule_loop(config: dict[str, Any], *, dry_run: bool, extended: bool 
 
     console.print(
         f"[bold]Scheduled run[/bold] · target cohort: {target_date} "
-        f"({seg['platform']} / {seg['acquisition_source']})"
+        f"({seg['platform']} / {seg['acquisition_source']}) · report: {report_variant}"
     )
     console.print(f"  retry policy: {attempts} attempts, {interval_min} min apart")
     console.print(f"  recipients [{list_label}] ({len(recipients)}): {', '.join(recipients)}")
@@ -743,7 +858,9 @@ def _run_schedule_loop(config: dict[str, Any], *, dry_run: bool, extended: bool 
             for attempt in range(1, attempts + 1):
                 console.print(f"\n[bold]Attempt {attempt}/{attempts}[/bold]")
                 try:
-                    report_path = _run_scheduled_attempt(config, target_date)
+                    report_path = _run_scheduled_attempt(
+                        config, target_date, report_variant=report_variant
+                    )
                 except Exception as e:  # noqa: BLE001
                     analysis_error = f"{type(e).__name__}: {e}"
                     console.print(f"  [red]analysis failed:[/red] {analysis_error}")
@@ -1415,11 +1532,80 @@ def _primary_dictionary() -> str:
     return _PRIMARY_DICT_CACHE
 
 
-def _build_user_message(*, prose: str, pm_query: str = "") -> str:
+def _validate_report_variant(name: str | None) -> str:
+    """Resolve and validate a --report value. Default = 'deep'. Errors if files missing."""
+    resolved = (name or "deep").strip().lower()
+    if resolved not in VALID_REPORT_VARIANTS:
+        _die(
+            f"unknown --report value {name!r}.",
+            extra=f"  Valid options: {', '.join(VALID_REPORT_VARIANTS)}.",
+        )
+    needed: list[Path] = []
+    if resolved in ("deep", "both"):
+        needed.append(DEEP_TEMPLATE_PATH)
+    if resolved in ("lite", "both"):
+        needed.extend([LITE_TEMPLATE_PATH, LITE_LAYOUT_PATH])
+    for p in needed:
+        if not p.exists():
+            _die(
+                f"report template missing: {p.relative_to(PROJECT_ROOT)}.",
+                extra="  Run from the project root; reports/ must exist.",
+            )
+    return resolved
+
+
+def _load_report_section(variant: str) -> str:
+    """Assemble the report-shape block appended to the user message for `variant`."""
+    if variant == "deep":
+        return DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+
+    if variant == "lite":
+        layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
+        template = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+        return (
+            "## Layout for this run (which metrics to include and in what order)\n\n"
+            "```yaml\n"
+            f"{layout}\n"
+            "```\n\n"
+            f"{template}"
+        )
+
+    # variant == "both"
+    layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
+    lite = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    deep = DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+    return (
+        "Emit BOTH a lite section grid AND a deep diagnostic report for this run. "
+        "Order:\n\n"
+        "1. The lite section grid first (use the lite layout and template below).\n"
+        "2. A horizontal rule (`---`).\n"
+        "3. The deep status card and full diagnosis (use the deep template below).\n\n"
+        "The same numbers can appear in both halves — the lite half is for fast "
+        "scanning, the deep half is for full reasoning.\n\n"
+        "---\n\n"
+        "## Lite — layout for this run\n\n"
+        "```yaml\n"
+        f"{layout}\n"
+        "```\n\n"
+        "## Lite — template\n\n"
+        f"{lite}\n\n"
+        "---\n\n"
+        "## Deep — template\n\n"
+        f"{deep}"
+    )
+
+
+def _build_user_message(*, prose: str, pm_query: str = "", report_variant: str = "deep") -> str:
     parts = [
         "# PM playbook (the prose to follow)",
         "",
         prose.strip(),
+        "",
+        "---",
+        "",
+        "# Report shape for this run",
+        "",
+        _load_report_section(report_variant),
         "",
         "---",
         "",

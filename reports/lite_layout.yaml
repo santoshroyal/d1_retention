@@ -1,0 +1,61 @@
+# Layout for the LITE D1 retention report.
+#
+# PM-editable. Each section becomes one `## <name>` heading in the report.
+# Inside a section, metrics are emitted in this order:
+#   1. The Primary metric first.
+#   2. Then Bullet metrics in ascending `bullet_sort` order.
+#
+# To change the report layout, edit this file (add / remove / reorder metrics
+# or sections) and re-run `./tune --report lite`. No engineer involvement
+# needed as long as the column names you reference exist in
+# `data/sheets/app_health_daily.csv` — check `data/dict/app_health_daily.md`
+# for the authoritative column list.
+
+sections:
+  - name: Engagement
+    metrics:
+      - column: avg_engagement_time_per_user
+        display_name: Average session time
+        kind: primary
+
+  - name: Frequency
+    metrics:
+      - column: dau
+        display_name: DAU
+        kind: primary
+      - column: pct_dau_via_notifications
+        display_name: Share of DAU via notifications
+        kind: bullet
+        bullet_sort: 1
+
+  - name: Grow Net Installs
+    metrics:
+      - column: installs
+        display_name: Installs
+        kind: primary
+      - column: acquisition_source
+        display_name: Acquisition mix
+        kind: bullet
+        bullet_sort: 1
+
+  - name: Retention (D0 to D7)
+    metrics:
+      - column: d1_corrected
+        display_name: D1 Retention
+        kind: primary
+      - column: d0_uninstalls
+        display_name: D0 uninstalls
+        kind: bullet
+        bullet_sort: 1
+      - column: d1_users
+        display_name: D1 users
+        kind: bullet
+        bullet_sort: 2
+      - column: pct_d0_login
+        display_name: D0 login rate
+        kind: bullet
+        bullet_sort: 3
+      - column: pct_d0_notification_opt_in
+        display_name: D0 notification opt-in
+        kind: bullet
+        bullet_sort: 4

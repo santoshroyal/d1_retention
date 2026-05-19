@@ -202,75 +202,28 @@ After the diagnostic, decide whether external context could explain the verdict:
 
 Use `list_docs()` if you want to see the menu with descriptions.
 
-## Report shape
+## Output language (applies to every report variant)
 
-Two-part structure. The top is a **fixed status card** so the PM can scan the verdict in 5 seconds. The bottom is the free-form diagnosis. Diagnosis-first — never walk through all the data and land on a conclusion at the end.
+These rules apply regardless of which report variant the orchestrator passed you. The exact report shape — status card vs lite section grid vs anything else — lives in the variant file the orchestrator passes you alongside this playbook (`reports/lite.md`, `reports/deep.md`, or both for `--report both`).
 
-### Part 1 — Status card (always emit, exact shape)
-
-Open the report with a one-line severity banner, then a 6-row table. Every report uses these exact field names so two reports can be diff-ed week over week.
-
-```
-🔴 ALERT · <one-line title summarising the move>
-
-| Field               | Value                                                              |
-|---------------------|--------------------------------------------------------------------|
-| Cohort / segment    | <YYYY-MM-DD install cohort> · <platform> · <acquisition_source>   |
-| D1 Retention        | <value%>                                                          |
-| vs Last 7 Days      | <±X.XXpp> (avg <value%>)                                          |
-| vs <Weekday> average| <±X.XXpp> (avg <value%>) — basis for <🔴/🟡/🟢> <ALERT/FLAG/NORMAL/RISE FLAG/RISE ALERT> |
-| Primary driver      | <plain English one-sentence cause — see output rules below>       |
-| iOS comparison      | <±X.XXpp> (<iOS direction in plain English> → <looks segment-specific | likely external | unclear>) |
-```
-
-**Comparator rule:** the comparator is always the *other* platform. If the headline segment is Android, the comparator row reports iOS. If the headline segment is iOS, the comparator row reports Android. Use the same metric the Headline picked (see Forcing rule above).
-
-**Severity badge rules** (first cell of the banner — pick exactly one, based on the **stable baseline** delta):
-
-| Badge | When |
-|---|---|
-| 🔴 ALERT | Δ ≤ −4pp vs stable baseline |
-| 🟡 FLAG | Δ between −2pp and −4pp vs stable baseline |
-| 🟢 NORMAL | Δ within ±2pp vs stable baseline |
-| 🟡 RISE FLAG | Δ between +2pp and +4pp vs stable baseline |
-| 🟢 RISE ALERT | Δ ≥ +4pp vs stable baseline (still surface — what worked is worth knowing) |
-
-**Card field discipline:**
-- Every numeric value must come from a tool return, not your own arithmetic.
-- The "D1 Retention", "vs Last 7 Days", and "vs <Weekday> average" rows must all use `d1_corrected`. Never mix metrics across these three rows. (See the Forcing rule above.)
-- If a field is genuinely unknown or not yet computable, write `data not available` — do not omit the row silently.
-- Keep the card to exactly these 6 rows. Do not add rows. The whole point is consistency across runs.
-
-**Output language rules (apply to the entire report, not just the card):**
 - Never use column names (`d1_corrected`, `pct_d0_notification_opt_in`, `avg_engagement_time_per_user`, etc.) anywhere in the output. Use plain English names: "D1 Retention", "Day 0 notification opt-in", "average session time", etc.
 - Never use internal framework terms anywhere in prose: Stage 1 / Stage 2 / Stage 3, "hook", "rolling-7", "IQR-clean", "tolerance band", "threshold rule", "comparator", "baseline", "rolling average", "flagged", "alert" (outside the badge), "pp" (write "percentage points" or rephrase as plain English).
 - Never use system-verdict language in narrative prose. "Flagged" and "alert" are badge labels — they belong in the status card only. In prose, describe what actually happened: "D1 was soft", "D1 fell below typical", "D1 recovered", not "D1 was flagged / alerted". When citing a multi-day pattern, name the dates and what the number did — do not list badge labels.
-- Never write delta values with signs and units in prose (e.g. "+6.53pp", "−4.71pp vs rolling"). Write them as plain English: "rose sharply", "fell 5 points below the typical Monday level", "recovered to near-normal". Numbers in the card are fine; numbers in prose should be embedded in a sentence a non-analyst can read.
+- Never write delta values with signs and units in prose (e.g. "+6.53pp", "−4.71pp vs rolling"). Write them as plain English: "rose sharply", "fell 5 points below the typical Monday level", "recovered to near-normal". Numbers in the structured parts of the report (status card or metric headline) are fine; numbers in prose should be embedded in a sentence a non-analyst can read.
 - Never state a cause or conclusion as definitive unless every available signal points the same way. Use hedged language by default: "looks Android-specific", "likely", "suggests", "points toward". Reserve "is" and "confirms" only when evidence is unambiguous and multiple independent signals agree.
-- Primary driver field: one plain English sentence. No stage numbers, no column names. If cause is unknown, name the most likely suspect and state why it cannot be confirmed. Examples: "Likely push notification quality — data unavailable to confirm." / "Install mix shifted toward lower-retention paid channels." / "No clear cause — all measurable signals were stable."
-- **Streak-leads rule.** When D1 has been consistently soft (or consistently strong) across multiple recent same-weekdays or consecutive days, the streak is the headline — not the single cohort day. Open the Primary driver field with the streak: "D1 has been running below the Monday average for N weeks" or "D1 has been soft for N consecutive days." Single-day detail follows as supporting context only. Use `flag_dip_days` or `compute_rolling_average` to confirm the pattern before citing it.
-- **Thin-baseline rule.** When `compare_to_baseline` returns `baseline_meta.n_observations < 4` on the stable baseline, the day-of-week group has very few data points and the mean is unreliable. Append `— THIN BASELINE (n=<n_observations>)` to the "vs <Weekday> average" row and treat the severity verdict as indicative only — state this explicitly in the Diagnosis. Four or more observations is sufficient; below four, do not state the severity with confidence. (Note: the rolling7 baseline still carries `partial_window` in its metadata — that flag applies to the "vs Last 7 Days" row only and does not affect the severity badge, which is driven by the stable baseline.)
 - **Signal-errors rule.** When `compute_signals_for_day` returns a non-empty `signal_errors` dict, any signal listed there could NOT be computed — its value in `signals` is null because of a tool failure, not because the metric did not move. Do NOT cite such a signal as "flat" or "stable". Either cite the failure as a data gap (`opt-in: n/a — <reason from signal_errors>`) or omit the line entirely. Mixing "could not compute" with "did not move" is the most common way to write a wrong diagnosis.
 
-### Part 2 — Diagnosis (free-form)
+The shape-specific rules (status card field names, lite section layout, color indicators, etc.) live in the variant file.
 
-Below the card, write the sections in order. All sections follow the output language rules above — no column names, no stage numbers, no internal framework terms anywhere.
+## Report shape
 
-1. **Diagnosis** — flowing paragraph, 2–4 sentences. Cover: (a) what the number was and whether it was soft or strong, (b) whether the cause looks platform-specific or external, (c) the most likely explanation, (d) whether it can be confirmed. Do not pad with filler sentences. Do not restate the headline number verbatim.
+See the report-variant file passed in alongside this playbook for the exact shape to emit:
 
-2. **Evidence** — three subsections in order:
+- `reports/deep.md` — fixed 6-row status card on top, free-form diagnosis below (Diagnosis / Evidence / Context & Flags / What to watch next).
+- `reports/lite.md` — severity banner on top, then four sections (Engagement / Frequency / Grow Net Installs / Retention) with one metric line per row and a color indicator per metric. Layout — which metrics to include and in what order — comes from `reports/lite_layout.yaml`.
+- `reports/both` mode — emit the lite section grid first, then the deep status card and diagnosis below.
 
-   **Acquisition** — bullet list. One bullet per source (total, organic, paid, WTA, others) checked against its 7-day average. (Per-source acquisition uses a 7-day trailing comparison deliberately — acquisition mix moves faster than D1 and a stable weekday baseline would smooth out the short spikes that are the actual signal here.) If any source is running significantly above normal, flag it as a possible suppressor of organic D1 — medium-to-low probability, stated as a suspicion not a conclusion. The more sources spiking, the stronger the suspicion. If all sources are at or below normal, one bullet stating acquisition mix is not the driver. Never reference misattribution mechanics. Do not speculate beyond what the numbers show.
-
-   **D0 Experience** — bullet list. One bullet per signal: plain English name, value, delta vs last 7 days, one-word judgment (stable / improving / declining). Format: "[Signal name]: [value], [delta] vs last 7 days — [judgment]." If the dictionary flags a signal as not cohort-specific (all-DAU), add: "this measures all users, not just the new install cohort — treat as directional only." If a signal is unavailable, skip it entirely.
-
-   **D1 Return Trigger** — flowing paragraph. If cohort-level push data (send rate, click-through rate) is unavailable, say so plainly. Check for a proxy signal (e.g. overall push-driven DAU). If a proxy exists, report it with its recent range and state explicitly what it does and does not confirm. If no data at all is available, state that return behaviour could not be assessed from available data.
-
-3. **Context & Flags** — bullet list. Appears ONLY when at least one of these is true: a known holiday or event falls on or near the cohort day, a logged incident (infra, push, release) overlaps the window, or a notable historical pattern repeats. One bullet per flag, plain English, with the implication for today's number. If none apply, omit this section entirely.
-
-4. **What to watch next** — flowing paragraph. Appears ONLY when it adds something the Diagnosis did not already say: a broader pattern emerging, an ambiguous signal that needs more time to resolve, or a meaningful directional call about where retention is heading. Before writing it, assess whether you have enough history — fetch more if needed, using your own judgment on how far back matters. Minimal numbers unless essential. Maximum 2–3 sentences. If nothing to add beyond Diagnosis, omit entirely.
-
-For a D1 rise, also close with: **is this repeatable?** News-driven → no, will normalise. Mix improvement → maybe, if held. D0 activation improvement → yes, if a product change drove it (name it). Unknown → say so.
+Diagnosis-first — never walk through all the data and land on a conclusion at the end.
 
 ## Hard rules (recap from system preamble)
 

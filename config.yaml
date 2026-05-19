@@ -90,7 +90,10 @@ email:
   smtp_port: 587
   from_env_var: "TOI_SMTP_FROM"
   password_env_var: "TOI_SMTP_APP_PASSWORD"
-  # Subject placeholders: {date} = YYYY-MM-DD of the analysed cohort;
-  # {status} = the severity badge on success, or 'data unavailable' /
-  # 'analysis failed' on failure paths.
-  subject_template: "TOI D1 Retention — {date} — {status}"
+  # Subject placeholders:
+  #   {platform} = analysed platform (title-cased: 'Android', 'iOS').
+  #   {date}     = YYYY-MM-DD of the analysed cohort.
+  #   {status}   = the severity badge on success ('🟢 NORMAL', '🟡 FLAG',
+  #                '🔴 ALERT', etc.), or 'data unavailable' /
+  #                'analysis failed' on the failure paths.
+  subject_template: "<Agentic D1 Report> {platform}  {date} · {status}"
