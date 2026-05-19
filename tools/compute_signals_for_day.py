@@ -1,4 +1,4 @@
-"""Tool: compute_signals_for_day — all 8-step diagnostic signals for one date."""
+"""Tool: compute_signals_for_day — diagnostic signals for one cohort day."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pandas as pd
 from tools._common import (
     coerce_metric,
     get_rows,
+    RETENTION_OFFSETS,
     server,
     validate_segment,
 )
@@ -18,15 +19,19 @@ from tools.compute_rolling_average import compute_rolling_average
 
 @server.tool(
     description=(
-        "For one flagged date, return the 8-step diagnostic signals so the "
+        "For one flagged cohort day, return the diagnostic signals so the "
         "LLM does not have to derive them. `date` is the install cohort day "
-        "(the day users installed). D1 signals describe what changed for that "
-        "cohort; return day is date + 1. "
+        "(the day users installed). `retention_metric` selects which "
+        "retention rate the platform / iOS comparator is computed for: "
+        "'d1_corrected' (default, return_day = date + 1), 'd7_corrected' "
+        "(return_day = date + 7), or 'd30_corrected' (return_day = date + 30). "
+        "D0 signals (opt-in, login, uninstall, engagement) are always read on "
+        "the cohort day regardless of which retention horizon is asked for. "
         "Returns {ok, date, return_day, platform, acquisition_source, "
-        "signals: {platform_d1_delta_pp, ios_d1_delta_pp, "
+        "retention_metric, signals: {platform_delta_pp, ios_delta_pp, "
         "pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, "
         "d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, "
-        "installs_ratio, weekday}, raw: {today, trailing_mean}}. Each *_delta_pp "
+        "installs_ratio, weekday}, signal_errors, notes}. Each *_delta_pp "
         "is in percentage points; installs_ratio compares cohort-day installs "
         "to the trailing 7-day mean (1.5 = installs spike)."
     )
@@ -35,16 +40,27 @@ def compute_signals_for_day(
     date: str,
     platform: str,
     acquisition_source: str,
+    retention_metric: str = "d1_corrected",
 ) -> dict[str, Any]:
     err = validate_segment(platform, acquisition_source)
     if err:
         return {"ok": False, "error": err}
 
+    if retention_metric not in RETENTION_OFFSETS:
+        return {
+            "ok": False,
+            "error": (
+                f"retention_metric must be one of {sorted(RETENTION_OFFSETS)}, "
+                f"got {retention_metric!r}"
+            ),
+        }
+    n_days = RETENTION_OFFSETS[retention_metric]
+
     target = pd.to_datetime(date, errors="coerce")
     if pd.isna(target):
         return {"ok": False, "error": f"date not parseable: {date!r}"}
 
-    cohort = target
+    cohort = target  # `date` is the install cohort day in the PM convention.
 
     df = get_rows(platform=platform, acquisition_source=acquisition_source)
     cohort_row = df[df["date"] == cohort]
@@ -84,38 +100,41 @@ def compute_signals_for_day(
         return float(v.iloc[0]) if not v.empty else None
 
     # Cross-platform iOS comparator for the Stage-1 platform-check rule.
+    # Always reads the same retention_metric as the headline platform.
     ios_cmp_target = compare_to_baseline(
         date=str(target.date()),
-        metric="d1_corrected",
+        metric=retention_metric,
         platform="ios",
         acquisition_source=acquisition_source,
         baseline_kind="rolling7",
     )
     if ios_cmp_target.get("ok"):
-        ios_d1_delta_pp = ios_cmp_target["delta_pp"]
+        ios_delta_pp = ios_cmp_target["delta_pp"]
     else:
-        ios_d1_delta_pp = None
-        signal_errors["ios_d1_delta_pp"] = str(
+        ios_delta_pp = None
+        signal_errors["ios_delta_pp"] = str(
             ios_cmp_target.get("error") or "compare_to_baseline returned ok=false"
         )
 
-    # Same-segment D1 movement on `date`.
+    # Same-segment retention movement on the cohort day.
     plat_cmp = compare_to_baseline(
         date=str(target.date()),
-        metric="d1_corrected",
+        metric=retention_metric,
         platform=platform,
         acquisition_source=acquisition_source,
         baseline_kind="rolling7",
     )
     if plat_cmp.get("ok"):
-        platform_d1_delta_pp = plat_cmp["delta_pp"]
+        platform_delta_pp = plat_cmp["delta_pp"]
     else:
-        platform_d1_delta_pp = None
-        signal_errors["platform_d1_delta_pp"] = str(
+        platform_delta_pp = None
+        signal_errors["platform_delta_pp"] = str(
             plat_cmp.get("error") or "compare_to_baseline returned ok=false"
         )
 
-    # Stage-2 D0 signals on the cohort day (date − 1).
+    # Stage-2 D0 signals on the cohort day. These are independent of
+    # retention horizon — D0 opt-in / login / uninstall / engagement are
+    # measured on the install day, not the return day.
     opt_in_delta_pp = _delta_pp(
         "pct_d0_notification_opt_in", cohort, "pct_d0_notification_opt_in_delta_pp"
     )
@@ -203,12 +222,13 @@ def compute_signals_for_day(
     return {
         "ok": True,
         "date": str(target.date()),
-        "return_day": str((target + pd.Timedelta(days=1)).date()),
+        "return_day": str((target + pd.Timedelta(days=n_days)).date()),
         "platform": platform,
         "acquisition_source": acquisition_source,
+        "retention_metric": retention_metric,
         "signals": {
-            "platform_d1_delta_pp": platform_d1_delta_pp,
-            "ios_d1_delta_pp": ios_d1_delta_pp,
+            "platform_delta_pp": platform_delta_pp,
+            "ios_delta_pp": ios_delta_pp,
             "pct_d0_notification_opt_in_delta_pp": opt_in_delta_pp,
             "pct_d0_login_delta_pp": login_delta_pp,
             "d0_uninstall_rate_delta_pp": uninstall_rate_delta_pp,
@@ -221,9 +241,9 @@ def compute_signals_for_day(
         # the signal "did not move" — the signal could not be computed at all.
         "signal_errors": signal_errors,
         "notes": [
-            "platform_d1_delta_pp = today's D1 (install-aligned, d1_corrected) vs trailing 7-day mean.",
-            "ios_d1_delta_pp = same-day iOS comparator for the platform-check rule.",
-            "D0 deltas are evaluated on date (the install day); return_day = date + 1 is when D1 is measured.",
+            "platform_delta_pp = today's retention (retention_metric, install-aligned) vs the same metric's trailing 7-day mean.",
+            "ios_delta_pp = same-day iOS comparator for the platform-check rule, using the same retention_metric.",
+            "D0 deltas are evaluated on date (the install day); return_day = date + N where N depends on retention_metric.",
             "d0_uninstall_rate is Android-only (iOS does not provide this signal).",
             "installs_ratio compares cohort-day installs to the trailing 7-day mean.",
             "If a signal is null AND has an entry in signal_errors, treat as 'could not compute', not 'did not move'.",

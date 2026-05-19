@@ -40,6 +40,16 @@ RATE_METRICS: dict[str, tuple[str, str]] = {
     "d30_corrected": ("d30_users", "d30_installs"),
 }
 
+# Maps install-aligned retention metric names to the day offset from the
+# install cohort day to the return day (return_day = cohort_day + N).
+# Used by compute_signals_for_day and tune helpers to derive cohort days
+# and to know how far back to look for a "completed" cohort.
+RETENTION_OFFSETS: dict[str, int] = {
+    "d1_corrected":  1,
+    "d7_corrected":  7,
+    "d30_corrected": 30,
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared constants — used across multiple tool files.

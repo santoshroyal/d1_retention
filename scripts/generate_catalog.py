@@ -52,9 +52,22 @@ _WORKED_EXAMPLES: dict[str, str] = {
         '              baseline="rolling7")'
     ),
     "compute_signals_for_day": (
+        '# Default — D1 cohort (return_day = date + 1):\n'
         'compute_signals_for_day(date="2026-04-02",\n'
         '                       platform="android",\n'
-        '                       acquisition_source="organic")'
+        '                       acquisition_source="organic")\n'
+        '\n'
+        '# D7 cohort (return_day = date + 7):\n'
+        'compute_signals_for_day(date="2026-04-02",\n'
+        '                       platform="android",\n'
+        '                       acquisition_source="organic",\n'
+        '                       retention_metric="d7_corrected")\n'
+        '\n'
+        '# D30 cohort (return_day = date + 30):\n'
+        'compute_signals_for_day(date="2026-04-02",\n'
+        '                       platform="android",\n'
+        '                       acquisition_source="organic",\n'
+        '                       retention_metric="d30_corrected")'
     ),
     "compute_acquisition_mix_shift": (
         'compute_acquisition_mix_shift(date="2026-04-01",\n'

@@ -102,7 +102,7 @@ compute_rolling_average(metric="d1_corrected", platform="android",
 
 **What it does**
 
-For one flagged date, return the 8-step diagnostic signals so the LLM does not have to derive them. `date` is the install cohort day (the day users installed). D1 signals describe what changed for that cohort; return day is date + 1.
+For one flagged cohort day, return the diagnostic signals so the LLM does not have to derive them. `date` is the install cohort day (the day users installed). `retention_metric` selects which retention rate the platform / iOS comparator is computed for: 'd1_corrected' (default, return_day = date + 1), 'd7_corrected' (return_day = date + 7), or 'd30_corrected' (return_day = date + 30). D0 signals (opt-in, login, uninstall, engagement) are always read on the cohort day regardless of which retention horizon is asked for.
 
 **Parameters**
 
@@ -111,17 +111,31 @@ For one flagged date, return the 8-step diagnostic signals so the LLM does not h
 | `date` | string | yes | — |  |
 | `platform` | string | yes | — |  |
 | `acquisition_source` | string | yes | — |  |
+| `retention_metric` | string | no | `'d1_corrected'` |  |
 
 **Return shape**
 
-Returns {ok, date, return_day, platform, acquisition_source, signals: {platform_d1_delta_pp, ios_d1_delta_pp, pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, installs_ratio, weekday}, raw: {today, trailing_mean}}. Each *_delta_pp is in percentage points; installs_ratio compares cohort-day installs to the trailing 7-day mean (1.5 = installs spike).
+Returns {ok, date, return_day, platform, acquisition_source, retention_metric, signals: {platform_delta_pp, ios_delta_pp, pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, installs_ratio, weekday}, signal_errors, notes}. Each *_delta_pp is in percentage points; installs_ratio compares cohort-day installs to the trailing 7-day mean (1.5 = installs spike).
 
 **Worked example (copy this, edit values, paste into the playbook)**
 
 ```
+# Default — D1 cohort (return_day = date + 1):
 compute_signals_for_day(date="2026-04-02",
                        platform="android",
                        acquisition_source="organic")
+
+# D7 cohort (return_day = date + 7):
+compute_signals_for_day(date="2026-04-02",
+                       platform="android",
+                       acquisition_source="organic",
+                       retention_metric="d7_corrected")
+
+# D30 cohort (return_day = date + 30):
+compute_signals_for_day(date="2026-04-02",
+                       platform="android",
+                       acquisition_source="organic",
+                       retention_metric="d30_corrected")
 ```
 
 ---

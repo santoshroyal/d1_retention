@@ -448,36 +448,68 @@ def _load_recipients(*, extended: bool = False) -> list[str]:
     return [str(r).strip() for r in raw if str(r).strip()]
 
 
-def _target_cohort_date():
-    """Return the most recent install cohort whose D1 is fully measured.
+def _target_cohort_date(retention_metric: str = "d1_corrected"):
+    """Return the most recent install cohort whose retention for `retention_metric` is fully measured.
 
-    `d1_corrected[date X]` requires the full day X+1 to be in the sheet (it
-    measures users who installed on X returning on X+1). At an 11:05 AM IST
-    run, the only cohort whose D1 was COMPLETE by overnight processing is the
-    one from two days ago — its return day (yesterday) is now done.
+    `dN_corrected[date X]` requires the full day X+N to be in the sheet (it
+    measures users who installed on X and returned on X+N). At an 11:05 AM IST
+    run, the only cohort whose retention was COMPLETE by overnight processing
+    is the one whose return day was yesterday — i.e., cohort = today − (N + 1).
 
-    Concretely:
-      - 11:05 AM May 17 IST → returns May 15 (return day was May 16 = yesterday,
-        now complete; d1_corrected[May 15] is populated by the upstream pipeline).
-      - 11:05 AM May 18 IST → returns May 16.
+    Concretely (today = May 19 IST):
+      - retention_metric="d1_corrected"  → returns May 17 (N=1, today−2)
+      - retention_metric="d7_corrected"  → returns May 11 (N=7, today−8)
+      - retention_metric="d30_corrected" → returns Apr 18 (N=30, today−31)
 
-    Yesterday's cohort (today − 1) cannot be analysed at 11:05 AM because its
-    return day is today, which is not yet complete.
+    Yesterday's cohort cannot be analysed at 11:05 AM because its return day
+    is today, which is not yet complete.
+
+    Raises ValueError if retention_metric is not in tools._common.RETENTION_OFFSETS.
     """
     from datetime import timedelta
     from zoneinfo import ZoneInfo
+    from tools._common import RETENTION_OFFSETS
 
+    if retention_metric not in RETENTION_OFFSETS:
+        raise ValueError(
+            f"retention_metric must be one of {sorted(RETENTION_OFFSETS)}, "
+            f"got {retention_metric!r}"
+        )
+    n_days = RETENTION_OFFSETS[retention_metric]
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    return now_ist.date() - timedelta(days=2)
+    return now_ist.date() - timedelta(days=n_days + 1)
 
 
-def _check_data_present(target_date, config: dict[str, Any]) -> bool:
-    """Check if (target_date, platform, source) has non-null d1_corrected in the loaded sheet.
+def _check_data_present(
+    target_date,
+    retention_metric: str = "d1_corrected",
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Check if (target_date, platform, source) has non-null `retention_metric` in the loaded sheet.
+
+    `retention_metric` selects the column to test — one of `d1_corrected`,
+    `d7_corrected`, or `d30_corrected`. Default is `d1_corrected` so existing
+    D1-only call sites continue to work identically.
 
     Assumes the sheet has already been refreshed by the caller (so the in-memory
     cache reflects the latest content). Does NOT trigger a network refresh.
+
+    Returns False if the sheet cannot be loaded, if no row exists for the
+    target (date, platform, source), or if the chosen retention column is
+    null/blank.
+
+    Raises ValueError if `retention_metric` is not in
+    `tools._common.RETENTION_OFFSETS`.
     """
-    from tools._common import sheet
+    from tools._common import RETENTION_OFFSETS, sheet
+
+    if retention_metric not in RETENTION_OFFSETS:
+        raise ValueError(
+            f"retention_metric must be one of {sorted(RETENTION_OFFSETS)}, "
+            f"got {retention_metric!r}"
+        )
+    if config is None:
+        raise ValueError("config is required")
 
     seg = config["schedule"]["target_segment"]
     try:
@@ -493,7 +525,7 @@ def _check_data_present(target_date, config: dict[str, Any]) -> bool:
     ]
     if rows.empty:
         return False
-    value = rows["d1_corrected"].iloc[0]
+    value = rows[retention_metric].iloc[0]
     return bool(pd.notna(value))
 
 
@@ -651,20 +683,65 @@ def _strip_preamble(report_text: str) -> str:
     return report_text
 
 
-def _extract_severity_badge(report_text: str) -> str:
-    """Parse the severity badge ('🔴 ALERT', '🟡 FLAG', etc.) from near the top of the report.
+_BADGE_PATTERN = r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)"
 
-    The report template forbids preamble above the banner, but the LLM occasionally
-    leaks a "pulling it together" line or a horizontal rule. Scan the first 20
-    non-empty lines (after stripping any leading markdown heading markers) for the
-    badge pattern, rather than locking onto line 1. The badge always sits near the
-    top of any valid report, so 20 lines is a generous safety margin.
+
+def _extract_severity_badge(
+    report_text: str,
+    primary_retention: str = "d1_corrected",
+) -> str:
+    """Parse the severity badge associated with `primary_retention` from the report.
+
+    Resolution order:
+
+      1. Look for the per-retention HTML comment
+         `<!-- severity_<short>: <badge> -->` where `<short>` is `d1`, `d7`,
+         or `d30` derived from `primary_retention`. This is the canonical
+         shape for combined multi-retention reports — three markers, one
+         per retention level. The extractor picks the one matching the
+         retention the orchestrator says is primary for this run.
+
+      2. Fall back to the single-marker shape `<!-- severity: <badge> -->`
+         used by today's single-retention reports.
+
+      3. Final fallback: scan the first 20 non-empty lines of the body
+         (stripped of leading markdown heading markers) for any badge
+         pattern. Handles the oldest legacy shape `# 🔴 ALERT · title`.
+
+    Returns `"unknown"` if no badge is found.
+
+    The default `primary_retention="d1_corrected"` preserves today's
+    behaviour for single-retention reports — when only one marker is
+    present (under any of the three shapes), this function still returns
+    that one badge.
     """
     if not report_text.strip():
         return "unknown"
-    badge_re = re.compile(
-        r"(🔴\s*ALERT|🟡\s*FLAG|🟢\s*NORMAL|🟡\s*RISE\s*FLAG|🟢\s*RISE\s*ALERT)"
+
+    short = primary_retention.split("_")[0]  # "d1_corrected" → "d1", etc.
+    badge_re = re.compile(_BADGE_PATTERN)
+
+    # 1. Per-retention HTML comment: <!-- severity_d1: 🔴 ALERT -->
+    per_retention_re = re.compile(
+        rf"<!--\s*severity_{re.escape(short)}\s*:\s*{_BADGE_PATTERN}",
+        re.IGNORECASE,
     )
+    m = per_retention_re.search(report_text)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1))
+
+    # 2. Legacy single-marker HTML comment: <!-- severity: 🔴 ALERT -->
+    legacy_re = re.compile(
+        rf"<!--\s*severity\s*:\s*{_BADGE_PATTERN}",
+        re.IGNORECASE,
+    )
+    m = legacy_re.search(report_text)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1))
+
+    # 3. Oldest legacy: badge appears in a heading or anywhere in the
+    # first 20 non-empty lines. Used when the report has no HTML comment
+    # at all (e.g., `# 🔴 ALERT · title`).
     seen = 0
     for line in report_text.splitlines():
         stripped = line.lstrip("#").strip()
@@ -676,6 +753,7 @@ def _extract_severity_badge(report_text: str) -> str:
         seen += 1
         if seen >= 20:
             break
+
     return "unknown"
 
 

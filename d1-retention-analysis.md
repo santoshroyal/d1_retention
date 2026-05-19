@@ -15,7 +15,7 @@ There is no inlined data table in this prompt — every retention number is fetc
   - `compute_stable_baseline(metric, platform, acquisition_source, weekday=None, baseline_start_date="2026-01-01")`
   - `compare_to_baseline(date, metric, platform, acquisition_source, baseline_kind="stable" | "rolling7")`
   - `flag_dip_days(metric, platform, acquisition_source, days_back, threshold_pp_drop=2.0, threshold_pp_alert=4.0, baseline="rolling7")`
-  - `compute_signals_for_day(date, platform, acquisition_source)` — returns the 8-step diagnostic signals as one dict.
+  - `compute_signals_for_day(date, platform, acquisition_source, retention_metric="d1_corrected")` — returns the 8-step diagnostic signals as one dict. Pass `retention_metric="d7_corrected"` or `"d30_corrected"` to evaluate the platform and iOS comparator against those retention horizons instead; D0 signals are always read on the cohort day regardless.
   - `compute_acquisition_mix_shift(date, platform, baseline_days=7)` — per-source share deltas (organic / paid / WTA / others) for Stage 1 step 2.
 - MCP tools for **data fetches**:
   - `get_rows(platform, acquisition_source, date_from, date_to, days, columns)` — pull raw daily rows for any segment / window. Use this when the PM's question is "show me the data" rather than "compute one number." Defaults to last 30 days, the standard 11-column projection, and a 400-row hard cap. All parameters optional except when the question implies them.
@@ -77,7 +77,7 @@ When the PM names a date, treat it as the **install cohort day** — the day use
 | "D1 last week" | Apr 21–27 | Apr 22–28 | seven cohorts, one per install day |
 
 **Where each diagnostic step lives:**
-- Stage-1 platform check → `compute_signals_for_day(date=cohort_day, ...)` — uses `d1_corrected` for the cohort day directly.
+- Stage-1 platform check → `compute_signals_for_day(date=cohort_day, ...)` — defaults to `d1_corrected` for the cohort day directly. Pass `retention_metric="d7_corrected"` or `"d30_corrected"` when diagnosing a D7 or D30 cohort.
 - Stage-1 acquisition mix shift → on the **cohort day** (organic / WTA / paid / others install volume).
 - Stage-2 D0 signals (opt-in, login, uninstall, engagement) → all on the **cohort day**.
 - Stage-3 hook / news → check both the **cohort day** (D0 news) and the **return day** (D1 news).
@@ -127,7 +127,7 @@ To get the list of flagged days, call `flag_dip_days(metric="d1_corrected", plat
 
 Run in order when D1 has moved ≥2pp. Each step references the deterministic value the tool returns. Cite the most direct signal as the lead; lower-priority signals support, they do not headline.
 
-For any flagged day, **call `compute_signals_for_day(date, platform, acquisition_source)` first** — it returns all 8 signals in one call. Read the dict, then walk through the steps.
+For any flagged day, **call `compute_signals_for_day(date, platform, acquisition_source)` first** — it returns all 8 signals in one call. Read the dict, then walk through the steps. For D7 or D30 cohorts, pass `retention_metric="d7_corrected"` / `"d30_corrected"`; the same 8 signals are returned, with the platform and iOS comparator evaluated against the requested retention horizon.
 
 ### Stage 1 — Acquisition
 
@@ -136,7 +136,7 @@ Compare same-day D1 movement on Android vs iOS.
 - Both drop → likely news cycle or external factor.
 - Android drops, iOS stable or up → Android-specific.
 
-The signal: `signals.platform_d1_delta_pp` (this segment) vs `signals.ios_d1_delta_pp` (iOS comparator).
+The signal: `signals.platform_delta_pp` (this segment) vs `signals.ios_delta_pp` (iOS comparator). Both are deltas of `retention_metric` (defaults to `d1_corrected` when `compute_signals_for_day` is called without that parameter).
 
 **2. Acquisition mix shift.**
 Did organic, WTA, paid, or others volume spike or drop on the cohort day?
