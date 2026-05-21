@@ -90,10 +90,19 @@ email:
   smtp_port: 587
   from_env_var: "TOI_SMTP_FROM"
   password_env_var: "TOI_SMTP_APP_PASSWORD"
-  # Subject placeholders:
+  # Subject placeholders (same set for both templates below):
   #   {platform} = analysed platform (title-cased: 'Android', 'iOS').
-  #   {date}     = YYYY-MM-DD of the analysed cohort.
-  #   {status}   = the severity badge on success ('🟢 NORMAL', '🟡 FLAG',
-  #                '🔴 ALERT', etc.), or 'data unavailable' /
-  #                'analysis failed' on the failure paths.
-  subject_template: "<Agentic Retention Report> {platform}  {date} · {status}"
+  #   {date}     = YYYY-MM-DD of the RUN DATE (today's IST date — when the
+  #                email is sent). NOT the D1 cohort day. The body still
+  #                names per-block cohort dates inside; the subject is a
+  #                "today's daily report" signal for inbox triage.
+  #   {status}   = three space-separated emojis on the success path — one
+  #                per retention horizon in order (D1 then D7 then D30),
+  #                e.g. "🟡 🟢 🟢". Same shape for both report variants
+  #                because both emit three per-retention severity markers.
+  #                Failure-path status strings: 'data unavailable' /
+  #                'analysis failed'.
+  # The two templates share the same shape; the only difference is the
+  # brand label inside the angle brackets ("Analyst" vs "Deep Analyst").
+  subject_template_lite: "<Signals Agentic Analyst> Tracking Causality in Retention: {platform} {date} {status}"
+  subject_template_deep: "<Signals Agentic Deep Analyst> Tracking Causality in Retention: {platform} {date} {status}"

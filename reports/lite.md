@@ -1,155 +1,264 @@
-# Lite retention report — visual rules and shape
+# Lite retention report — causality flow
 
-This file defines the LITE retention report. The orchestrator passes it to you alongside the playbook (`d1-retention-analysis.md`) and one or more retention-block specs (each carries its layout, its cohort day, and its retention metric).
+This file defines the LITE retention report. The orchestrator passes it to you alongside the playbook (`d1-retention-analysis.md`) and one block spec per retention horizon (each spec carries the retention metric and the cohort day).
 
 - The **playbook** defines methodology — windowing, the three-stage framework, the diagnostic checklist, thresholds, and general output language.
-- Each **block spec** defines which retention horizon (D1 / D7 / D30) is being analysed in that block, what cohort day to read, and the layout YAML for the four sections.
-- This **template** defines how to emit the blocks and how to write each metric line.
+- Each **block spec** says which retention horizon (D1 / D7 / D30) the block analyses and what cohort day to read.
+- This **template** defines how to write each block as a tight causality narrative.
 
 The playbook's general output rules still apply (no internal framework terms, no column names in prose, plain-English directions).
 
-## Important — what "lite" means
+## Important — what "lite" means here
 
-Lite refers to the **shape of the written output**, not to the depth of analysis. You must run the full diagnostic flow from the playbook for **every** retention block:
+Lite refers to the **shape of the written output**, not the depth of analysis. You run the full diagnostic flow from the playbook for **every** retention block, then compress the conclusions into a tight causality narrative per block.
 
-- The forcing rule (`compare_to_baseline(date=cohort_day, metric=<the block's retention_metric>, baseline_kind="stable")`) is mandatory for each block — it sets that block's severity marker.
-- The three-stage diagnostic checklist (acquisition mix shift, D0 signals, hook) runs the same way for each cohort day.
-- The cross-platform comparator (iOS) is checked per block — even though it is not written into the lite output, the verdict on "is this Android-specific" feeds the impact prose under that block's Retention section.
-- Context documents (events, holidays, incidents, release log) load on demand the same way.
-- Use `compute_signals_for_day(date=<cohort_day>, retention_metric=<block_retention_metric>, ...)` to get the diagnostic signals for each block in one call.
+For every block:
 
-The only difference between this variant and the deep variant is that the diagnostic conclusions are compressed into per-metric impact sentences and color dots, rather than written as a separate Diagnosis paragraph plus an Evidence section. The work is the same; the write-up is shorter.
-
-If at any point the diagnostic flow says "data not available" or surfaces a thin baseline or a signal-error for a metric, that fact lives in the relevant metric's impact prose — do not drop it just because there is no separate Diagnosis section to put it in.
+- The forcing rule is mandatory: `compare_to_baseline(date=cohort_day, metric=<the block's retention_metric>, baseline_kind="stable")` is your first call. It sets the block's severity marker.
+- Use `compute_signals_for_day(date=cohort_day, retention_metric=<the block's retention_metric>, ...)` for the D0 signals + iOS comparator in one call.
+- Use `compute_acquisition_mix_shift(date=cohort_day, platform=android, baseline_days=7)` for the Acquisition mix bullets — it already returns absolute installs, baseline mean, and install ratio per channel. Do not recompute the math.
+- The three-stage diagnostic checklist (acquisition mix shift, D0 signals, hook) is what produces the Driver line and the per-block prose.
 
 ## Three retention blocks per report
 
-The orchestrator passes **three retention blocks** for a combined run — one each for D1, D7, and D30. Emit them back to back in the order given (D1 first, then D7, then D30).
+Emit three blocks back to back in this order: D1 first, then D7, then D30.
 
-**No cross-references between blocks.** Each block analyses its own cohort day independently. Do not reference the May 17 cohort's D1 number inside the D7 block; do not say "the same cohort had a worse D1" anywhere; do not compare across blocks. Each block stands alone — that is how the reader is meant to consume them.
+**No cross-references between blocks.** Each block analyses its own cohort day independently. Do not say "the same cohort had a worse D1" inside the D7 block; do not compare across blocks. Each block stands alone.
 
-If the orchestrator marks a block as **data missing** (the cohort's data was not in the sheet at run time), emit only this stub for that block instead of the four-section layout:
+If the orchestrator marks a block as **data missing**, emit only this stub for that block instead of the full content:
 
 ```
-# DN — <cohort day> install cohort
+## DN — <cohort day> install cohort
 
-> Data missing — the retention column for this cohort was not present in the sheet at run time. The other retention blocks in this email still ran normally; this one will populate on the next scheduled run once the upstream pipeline catches up.
+> Data missing — the retention column for this cohort was not present in the sheet at run time. The other blocks ran normally; this one will populate on the next scheduled run once the upstream pipeline catches up.
 ```
 
 Then proceed to the next block.
 
 ## Top of every report
 
-**No preamble.** The very first non-empty line of your output MUST be the first block's severity marker (an HTML comment, see below). Do not write any narration, thinking aloud, or process commentary above it — no "I have enough evidence", no "pulling it together", no "let me write the report". Begin at the marker. Stop at the footer. If you need to reason out loud, do it in your private thinking before you start producing the final report; nothing of that should appear in the output.
+**No preamble.** The very first non-empty line of your output MUST be the first block's hidden severity marker (an HTML comment, see below). Do not write any narration, thinking aloud, or process commentary above it. Begin at the marker. Stop at the bottom-line synthesis.
 
-**Subject line** is set by the orchestrator from `config.yaml`. Do not emit it in the report body. The subject already carries the severity badge (D1's, by default) — do not repeat it in any block's heading.
+**Subject line** is set by the orchestrator from `config.yaml`. Do not emit it in the report body.
+
+After the three hidden severity markers, write a single one-line **"The big picture"** TL;DR that summarises the three blocks in plain English. Example shapes:
+
+- `**The big picture:** D1 softened on May 17. D7 and D30 held normal.`
+- `**The big picture:** All three retention horizons held within normal range.`
+- `**The big picture:** D7 is the only horizon flagged this cycle.`
+
+Then a horizontal rule (`---`) and the first block.
 
 ## Shape of each retention block
 
-Emit each block in this exact order:
+The D1 block is **full**. The D7 and D30 blocks are **compressed** — they emit only the headline, the three short prose paragraphs (What happened / Why it matters / Driver), and the separator. D0 signals, Acquisition mix bullets, What we can't see, and Watch next are emitted **only in the D1 block**, never in D7 or D30.
 
-1. **Hidden severity marker** as an HTML comment. The orchestrator reads this to set per-block expectations and to pick the subject-line badge. Use the per-retention key — `severity_d1`, `severity_d7`, or `severity_d30` — matching that block's retention horizon:
+| Slot | D1 block | D7 block | D30 block |
+|---|---|---|---|
+| 1. Hidden severity marker | ✓ | ✓ | ✓ |
+| 2. Block heading (emoji + horizon + cohort + value) | ✓ | ✓ | ✓ |
+| 3. What happened | ✓ | ✓ | ✓ |
+| 4. Why it matters | ✓ | ✓ | ✓ |
+| 5. Driver | ✓ | ✓ | ✓ |
+| 6. D0 experience signals (bullet list) | ✓ | ✗ | ✗ |
+| 7. Acquisition mix (bullet list) | ✓ | ✗ | ✗ |
+| 8. What we can't see | ✓ | ✗ | ✗ |
+| 9. Watch next (when material) | ✓ | ✗ | ✗ |
+| 10. What would sharpen this read (block-specific field list) | ✓ | ✓ | ✓ |
+| 11. Block separator (`---`) | ✓ | ✓ | ✓ |
 
-   ```
-   <!-- severity_d1: 🟢 NORMAL -->
-   ```
+**Important — the diagnostic still runs for D7 and D30.** You still call `compute_signals_for_day(date=cohort_day, retention_metric=<dN_corrected>, ...)` and `compute_acquisition_mix_shift(date=cohort_day, platform=android)` for D7 and D30. The Driver line for those blocks must still be grounded in real signal movement and real mix data — it is just that the per-signal bullets and the per-channel bullets do not appear in the email. The reader sees the conclusion, not the evidence.
 
-   Use one of: `🔴 ALERT`, `🟡 FLAG`, `🟢 NORMAL`, `🟡 RISE FLAG`, `🟢 RISE ALERT`. Severity selection follows the playbook's "Severity badge rules" (stable-baseline delta on **that block's retention metric**, not always D1).
+Emit each block in this exact order. All sub-headings shown below are literal — use them as written.
 
-2. **Block heading** — a level-1 heading that names the retention horizon and the cohort day. No emoji, no badge word.
-
-   ```
-   # D1 — May 17 install cohort
-   ```
-
-   Format: `# <horizon> — <cohort day in plain English> install cohort`. For D7 the cohort day will be earlier (today − 8). For D30 earlier still (today − 31). The orchestrator tells you the exact cohort day for each block.
-
-3. **One blank line, then `---` (horizontal rule), then the four sections.**
-
-4. **Four sections** in the order given by the block's layout YAML — Engagement, Frequency, Grow Net Installs, Retention. Each section has its own `## <Section Name>` heading and the metrics listed in the layout, sorted by Primary first then Bullet metrics by ascending `bullet_sort`. The Retention section's primary metric is the block's retention horizon (D1 / D7 / D30); the rest of the metrics are the same across blocks.
-
-5. **`---` (horizontal rule)** after the last section of the block to separate it from the next block.
-
-After the final block, emit the footer (color key, see below).
-
-## Metric line shape — applies inside every section of every block
+### 1. Hidden severity marker
 
 ```
-<color-dot> **<display_name>: <value>** (<arrow> <delta or "flat"> vs typical <weekday>)
-
-<2–5 sentences of plain-English impact prose. Bold the key numbers and the
-key direction phrases within the prose. Explain what the metric did, whether
-it has any mechanical effect on the cohort's retention calculation, and the
-direction of that effect.>
+<!-- severity_d1: 🟡 FLAG -->
 ```
 
-Specifics:
+Use the per-retention key — `severity_d1`, `severity_d7`, or `severity_d30` — matching that block's retention horizon. Use one of: `🔴 ALERT`, `🟡 FLAG`, `🟢 NORMAL`, `🟡 RISE FLAG`, `🟢 RISE ALERT`. Severity selection follows the playbook's "Severity badge rules" (stable-baseline delta on **that block's retention metric**).
 
-- **Bold the headline** (`**<display_name>: <value>**`) so the eye can scan.
-- **Bold key numbers and key direction phrases inside the prose** (e.g. "**9% smaller than typical**", "**no mechanical effect on the cohort's retention**"). Do not bold connective text.
-- The parenthetical `(<arrow> <delta> vs typical <weekday>)` follows immediately after the bolded headline, in normal weight.
-- **The `<delta>` must be a compact phrase.** Acceptable: `9%`, `6.3 points`, `0.6pp`, `2.2 points`, `4.5 points`, `flat`. **Not** acceptable: `9% below typical Saturday`, `6.3 points below typical Saturday`. The phrase "vs typical <weekday>" is appended once by the template; the delta itself must never repeat any comparator wording.
-- **Format time-in-seconds as `Xm Ys`** for any metric measured in seconds (e.g. `avg_engagement_time_per_user`). Display `432 seconds` as `7m 12s`. Display sub-minute values as plain seconds — `45s`. Do not emit raw seconds for values above one minute.
-- For metrics with **no baseline** (e.g. `d1_users` / `d7_users` / `d30_users`, raw counts that scale with install volume), omit the parenthetical and write the prose to reflect that this is shown for transparency, not for comparison.
-- For **categorical** metrics (e.g. `acquisition_source`), the value is the share breakdown across categories — `organic 58%, paid 32%, WTA 7%, other 3%` — and the delta is the share change of the most-moved category.
+The three markers must all appear at the very top of the email body, before "The big picture" line. Put them together so the orchestrator can read them in one pass.
 
-### Prose length should match the dot color
+### 2. Block heading
 
-Match the depth of the impact prose to the dot. A green metric is not the story — keep its line short. A red metric named as a driver gets the full reasoning. This keeps the visual hierarchy clean: green metrics are quick scans, yellow get a sentence of context, red metrics get attention.
-
-| Dot | Prose length | Tone |
-|---|---|---|
-| 🟢 | **One short sentence.** Confirm the metric is at typical or moving positively, and stop. | Confirmation. |
-| 🟡 | **One to two sentences.** Name the move, name the concern briefly, do not over-explain. | Flag. |
-| 🔴 | **Two to four sentences.** Full reasoning — what moved, why it matters mechanically for the cohort's retention, how it ties to the headline diagnosis. | Diagnosis. |
-
-Do not pad green metrics to match the length of yellow or red ones — that flattens the signal you are trying to give.
-
-### Color indicator rules
-
-The dot before the bolded headline tracks the **magnitude of the metric's move**. It does not depend on whether the metric is a mechanical retention input — that nuance belongs in the prose, not the colour.
-
-| Dot | Rule |
-|---|---|
-| 🟢 | Metric is within ±2% (counts) or ±1pp (rates and shares), OR moving in a positive direction, OR has no baseline to compare against. |
-| 🟡 | Metric softened by 2–5% (counts) or 1–2pp (rates and shares). Moderate softness. |
-| 🔴 | Metric softened by more than 5% (counts) or more than 2pp (rates and shares). Clear softness — concern regardless of whether the metric is a mechanical retention input. |
+```
+## <emoji> DN — <cohort day> cohort: <retention_value>%
+```
 
 Examples:
-- Average session time within 0.2% of typical → 🟢.
-- DAU down 9% → 🔴.
-- Installs down 7% → 🔴.
-- D0 notification opt-in down 4.4pp → 🔴.
-- DN Retention down 4.5pp → 🔴 (whichever DN this block analyses).
-- DN users (raw count, no baseline) → 🟢.
 
-### Direction arrows
+- `## 🟡 D1 — May 17 cohort: 25.07%`
+- `## 🟢 D7 — May 11 cohort: 14.82%`
+- `## 🟢 D30 — April 18 cohort: 11.33%`
 
-| Arrow | Use |
-|---|---|
-| ↑ | The metric rose vs the baseline. |
-| ↓ | The metric fell vs the baseline. |
-| → flat | The metric is within ±0.2pp (for rates) / ±1% (for counts) of baseline. |
+Format:
+- Leading emoji matches the block's severity: 🔴, 🟡, or 🟢.
+- Horizon label is literal — `D1`, `D7`, or `D30`.
+- Cohort day in plain English (`May 17`, not `2026-05-17`).
+- Retention value as percentage with two decimals.
 
-## Footer — emit once after the last block
+### 3. What happened
+
+One bold-labelled paragraph. Two sentences max. Cite both deltas — vs trailing 7-day pace AND vs typical weekday — with the baseline values in parentheses. Examples:
+
+- `**What happened:** D1 came in 1.38pp below trailing 7-day pace (26.44%) and 3.70pp below the typical Sunday level (28.76%).`
+- `**What happened:** D7 came in 0.20pp below trailing pace (15.02%) and 1.97pp below the Monday average (16.79%). Inside normal range.`
+
+### 4. Why it matters
+
+One bold-labelled paragraph. The cross-platform comparator and the "is this Android-specific?" judgment. Examples:
+
+- `**Why it matters:** iOS D1 for the same cohort rose 2.03pp. The softness is Android-specific, not a shared news-cycle or external effect.`
+- `**Why it matters:** iOS D7 softened 1.27pp on the same cohort. The dip is shared and mild, not a segment failure.`
+
+### 5. Driver
+
+One bold-labelled sentence. The plain-English cause. Examples:
+
+- `**Driver:** Weaker first-session experience on May 17 capped how many users could be reached on May 18.`
+- `**Driver:** No single first-day signal points to a cause.`
+
+If the cause is unknown, name the most likely suspect and state why it cannot be confirmed.
+
+### 6. D0 experience signals (vs last 7 days) — **D1 BLOCK ONLY**
+
+**Do not emit this section in the D7 or D30 blocks.** Skip directly from the Driver line to the block separator for D7 and D30. The diagnostic still runs (so the Driver is grounded), but the per-signal bullets stay out of the output for those two blocks.
+
+For D1: bullet list. Exactly four bullets, in this order: Push opt-in, Login rate, Uninstall rate, Average session time.
+
+**Markdown formatting rule:** leave one blank line between the `**D0 experience signals (vs last 7 days):**` label and the first bullet. Without that blank line, the bullets render as inline text instead of a proper list in HTML.
+
+Format per bullet:
 
 ```
----
-
-*Color key: 🟢 at typical / positive  ·  🟡 softening  ·  🔴 clear drag*
+- <Signal name>: <direction value> — <one-word judgment or short qualifier>
 ```
 
-## Baseline rule
+Examples:
 
-Every "vs typical <weekday>" delta uses the **stable weekday baseline** via `compare_to_baseline(metric=<block_retention_metric or supporting_metric>, baseline_kind="stable")`. The weekday in the delta is the cohort day's weekday — so D1, D7, and D30 blocks may each compare against a different weekday baseline depending on which day their cohort falls on.
+- `- Push opt-in: down 3.4pp — strongest leading indicator for D1`
+- `- Login rate: down 0.5pp — stable`
+- `- Uninstall rate: up 1.7pp — worse first impression at scale`
+- `- Average session time: down 3.4%. Measures all users, not just the new install cohort — directional only.`
 
-If a metric does not have a stable-baseline tool wired up, fall back to a 7-day rolling average for that metric and state in the prose for that line that the comparison is a 7-day rolling average rather than the typical-weekday baseline.
+Notes:
+- `Average session time` always carries the "measures all users, not just the new install cohort — directional only" qualifier.
+- Use whichever signal label and judgment phrasing best fits the situation; the examples above are guidance, not a hard template.
+- If a signal is unavailable (signal_errors), say so plainly: `- Push opt-in: data not available — <reason>` and skip the judgment.
 
-## What you do NOT emit in lite mode
+### 7. Acquisition mix (vs trailing 7-day pace) — **D1 BLOCK ONLY**
 
-- The 6-row status card (that is the deep variant's job).
-- The Diagnosis / Evidence / Context & Flags / What to watch next prose sections (deep variant).
-- Any prose outside the four sections of each block and the footer.
-- Cross-references between blocks ("the same cohort had ...", "as in the D1 block above ..."). Each block is independent.
+**Do not emit this section in the D7 or D30 blocks.** The mix shift is still computed for D7 and D30 (so the Driver line can reference it when relevant — e.g., "a large paid burst on April 19 compressed the organic share"), but the per-channel bullets do not appear in the email for those blocks.
 
-Note: this list is about the **written output**, not the analysis. You still run the full playbook diagnostic per block. The compressed per-metric impact sentences are the place where your diagnostic conclusions land — they should reflect the same reasoning a deep-variant Diagnosis paragraph would carry, scoped to that block's retention horizon and cohort day.
+For D1: bullet list. One bullet per channel — total, organic, paid, WTA, others — in that order. Use the absolute installs and baseline mean returned by `compute_acquisition_mix_shift`.
+
+**Markdown formatting rule:** leave one blank line between the `**Acquisition mix (vs trailing 7-day pace):**` label and the first bullet — same rule as the D0 signals list above.
+
+Format per bullet:
+
+```
+- <Channel>: <today_installs> vs <baseline_installs> (~<percent direction>) — <one-line judgment or qualifier>
+```
+
+Examples:
+
+- `- Total installs: 3,920 vs 4,097 (~4% below) — not a driver`
+- `- Organic: 1,692 vs 2,156 (~22% below); organic share down ~9pp of mix`
+- `- Paid: 1,825 vs 1,686 (~8% above) — modest lift`
+- `- WTA: 372 vs 221 (~69% above). Lower-intent users can leak into the organic bucket via attribution noise. Flagged as suspicion, medium-to-low probability.`
+- `- Others: at typical level`
+
+WTA-specific rule: if WTA install count is materially above its baseline, you may cite the attribution-noise effect as a hedged suspicion. Keep it proportionate — only when D0 signals are otherwise clean.
+
+End the Acquisition mix bullets with **one summary line** when the mix is not a driver, in italics or as a plain trailing bullet — example: `- Acquisition mix on May 11 is not a suppressor of D7; if anything it skewed the cohort more organic.`
+
+### 8. What we can't see — **D1 BLOCK ONLY**
+
+**Do not emit this section in the D7 or D30 blocks.** For D1: one bold-labelled paragraph. State the relevant data gap plainly. For D1, that is push send rate and click-through on the return day. For D7 and D30, it is the longer-tail engagement story between cohort day and return day. Examples:
+
+- `**What we can't see:** Push reach and click-through on May 18 aren't in the data. The likely failure point is upstream anyway: fewer opted-in users means a structurally smaller reachable audience before any push is sent.`
+- `**What we can't see:** Week-one push and content cadence pulling the May 11 cohort back over May 12–18 isn't directly measurable at cohort level. Shared iOS softness suggests the overall content week was a touch lighter.`
+
+### 9. Watch next — **D1 BLOCK ONLY**, optional — omit when nothing material
+
+**Do not emit this section in the D7 or D30 blocks.** For D1: optional bold-labelled paragraph. Use this slot when:
+
+- The same retention horizon has been off-baseline for two or more days in a row, OR
+- A specific upcoming day's reading would change the read meaningfully, OR
+- A particular signal is worth re-checking in the next run.
+
+Use `flag_dip_days(metric=<this block's retention_metric>, days_back=14)` to confirm any multi-day pattern before writing.
+
+If there is nothing material to add, **omit this slot entirely** — do not emit a placeholder.
+
+Examples (only when warranted):
+
+- `**Watch next:** May 16 also closed below its recent pace by a similar amount. Two consecutive Android organic D1 softenings on different weekdays are now on the board. If May 18 lands at or below its Monday level too, the read shifts from one-day blip to wider onboarding or acquisition-quality drift.`
+
+### 10. What would sharpen this read — emit in ALL blocks
+
+A short bold-labelled header followed by a bullet list of fields that would extend the diagnosis for this block but are not in our current data. **Same header sentence in every block**, so the reader learns the pattern after seeing it once. The bullet list is block-specific.
+
+**Header sentence (identical in all three blocks):**
+
+```
+**What would sharpen this read:** these fields would extend the diagnosis but are not in our current data.
+```
+
+**Per-block bullet list — emit exactly these field names, in this order, no embellishment:**
+
+For the **D1 block**:
+
+```
+- D0 second session rate
+- D0 deep read rate
+```
+
+For the **D7 block**:
+
+```
+- D3 retention rate
+- Days returned in D1–D6 (return frequency)
+- Launcher vs push return ratio in D1–D6
+```
+
+For the **D30 block**:
+
+```
+- Days returned in D0–D29 (return frequency)
+- Hour-based opens in D8–D29
+- Avg article completion rate in D1–D7 vs D8–D14
+```
+
+**Rules:**
+- Do not invent or substitute field names. Emit exactly the strings shown above for the relevant block.
+- Do not add a "— not tracked" or "— N/A" suffix on each bullet; the section header already conveys absence.
+- Do not editorialise about why these are missing or when they might land. The list is a standing ask, not a discussion.
+- Leave one blank line between the bold header and the first bullet (same markdown rule as the other bullet sections).
+
+### 11. Block separator
+
+End each block with `---` (horizontal rule) before the next block starts.
+
+## Bottom of every report
+
+After the last block's separator, emit **"The bottom line"** as a bold-labelled one-or-two-sentence synthesis across all three blocks. Examples:
+
+- `**The bottom line:** One short-window flag, two longer-window normals. The May 17 D1 dip is the only signal worth acting on this cycle. Next reads (May 18 D1, May 16 follow-through) will tell us whether to treat onboarding push opt-in as the live issue.`
+- `**The bottom line:** All three horizons held normal. Nothing material to act on this cycle.`
+
+This is the report's final line. Nothing follows it — no footer, no color key.
+
+## What you do NOT emit
+
+- No 6-row status card table (that is the deep variant's job).
+- No per-metric color dots inside the prose.
+- No four-section grid (Engagement / Frequency / Grow Net Installs / Retention).
+- No standalone DAU, share-of-DAU-via-notifications, or session-time-as-Engagement-section. Engagement time appears only as one of the four D0 signals.
+- No color-key footer.
+- No cross-references between blocks.
+- **No reference to "the PM", "the user", or any other reader role.** This report is a standalone executive briefing. Do not address whoever asked, do not refer to "the question", do not write "the PM asked", "your question is", "you wanted to know" or any second-person address. The reader is whoever opens the email; treat the report as a written piece that stands on its own. If a focus area was supplied to this run (see the "Focus area for this run" prompt block, if present), let it shape emphasis silently — never name it in the prose.
+
+The lite report is now a **causality narrative** — what happened, why it matters, what drove it, what the evidence shows, what we can't see, what to watch next. Three of those, stacked, with a TL;DR on top and a bottom-line synthesis at the end.

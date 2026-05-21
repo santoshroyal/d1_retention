@@ -220,8 +220,8 @@ The shape-specific rules (status card field names, lite section layout, color in
 See the report-variant file passed in alongside this playbook for the exact shape to emit:
 
 - `reports/deep.md` — fixed 6-row status card on top, free-form diagnosis below (Diagnosis / Evidence / Context & Flags / What to watch next).
-- `reports/lite.md` — severity banner on top, then four sections (Engagement / Frequency / Grow Net Installs / Retention) with one metric line per row and a color indicator per metric. Layout — which metrics to include and in what order — comes from `reports/lite_layout.yaml`.
-- `reports/both` mode — emit the lite section grid first, then the deep status card and diagnosis below.
+- `reports/lite.md` — three back-to-back retention blocks per email (D1, D7, D30), each a tight causality narrative (What happened / Why it matters / Driver). The D1 block additionally emits D0 signals, acquisition mix, "What we can't see", and "Watch next"; D7 and D30 stop at the Driver line. Every block closes with a fixed "What would sharpen this read" field-gap list. The shape is fixed in the template — there is no separate layout file.
+- `reports/both` mode — emit the lite causality blocks first, then the deep status card and diagnosis below.
 
 Diagnosis-first — never walk through all the data and land on a conclusion at the end.
 

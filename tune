@@ -54,7 +54,6 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 MCP_SERVER_PATH = PROJECT_ROOT / "tune_mcp.py"
 
 REPORTS_DIR = PROJECT_ROOT / "reports"
-LITE_LAYOUT_PATH = REPORTS_DIR / "lite_layout.yaml"
 LITE_TEMPLATE_PATH = REPORTS_DIR / "lite.md"
 DEEP_TEMPLATE_PATH = REPORTS_DIR / "deep.md"
 VALID_REPORT_VARIANTS = ("lite", "deep", "both")
@@ -186,9 +185,10 @@ def run(
         "--report",
         help=(
             "Which report shape to emit. 'deep' (default) = the 6-row status card "
-            "plus full diagnostic narrative. 'lite' = the 4-section metric dashboard "
-            "(see reports/lite_layout.yaml). 'both' = lite section grid first, then "
-            "the deep card and diagnosis below."
+            "plus full diagnostic narrative per retention block. 'lite' = the "
+            "Ritvij-style causality flow per retention block (What happened / Why / "
+            "Driver / D0 signals / Acquisition mix / What we can't see / Watch next). "
+            "'both' = lite blocks first, then deep blocks below."
         ),
     ),
 ) -> None:
@@ -536,10 +536,44 @@ _BANNER_TINTS = {
 }
 
 
+def _ensure_blank_line_before_lists(md_text: str) -> str:
+    """Insert a blank line before any bullet that immediately follows a non-blank line.
+
+    The `sane_lists` markdown extension requires a blank line between a
+    preceding paragraph and the first bullet of a list. The LLM occasionally
+    omits that blank line — e.g.
+
+        **D0 experience signals (vs last 7 days):**
+        - Push opt-in: down 2.5pp …
+
+    Without the blank line, sane_lists treats the bullets as continuation
+    of the same paragraph and the HTML output collapses them into inline
+    text. This helper walks the source line by line and inserts a blank
+    line before any line starting with `- ` or `* ` whose immediately
+    preceding line is non-blank and not itself a bullet / heading.
+    """
+    lines = md_text.splitlines()
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        is_bullet = stripped.startswith("- ") or stripped.startswith("* ")
+        if is_bullet and out:
+            prev = out[-1].rstrip()
+            prev_stripped = prev.lstrip()
+            prev_is_bullet = prev_stripped.startswith("- ") or prev_stripped.startswith("* ")
+            # Only insert when the previous line is non-blank, isn't a bullet
+            # itself, and isn't a heading (heading lists don't apply here).
+            if prev and not prev_is_bullet:
+                out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
 def _render_markdown_to_html(md_text: str) -> str:
     """Convert the report markdown into a self-contained HTML document for the email body."""
     import markdown
 
+    md_text = _ensure_blank_line_before_lists(md_text)
     body_html = markdown.markdown(
         md_text,
         extensions=["tables", "fenced_code", "sane_lists"],
@@ -603,7 +637,7 @@ def _send_email(
     recipients: list[str],
     attachment_path: Path | None = None,
 ) -> None:
-    """Send a multipart email via SMTP. Recipients are BCC'd so addresses are not exposed to each other."""
+    """Send a multipart email via SMTP. Recipients are on Cc so every reader sees who else got the report."""
     import smtplib
     from email.message import EmailMessage
 
@@ -616,8 +650,8 @@ def _send_email(
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = from_addr
-    msg["To"] = from_addr  # visible recipient = sender; actual recipients are BCC
-    msg["Bcc"] = ", ".join(recipients)
+    msg["To"] = from_addr  # primary "To" is the sender; the actual readers are on Cc
+    msg["Cc"] = ", ".join(recipients)
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
     if attachment_path is not None and attachment_path.exists():
@@ -757,6 +791,33 @@ def _extract_severity_badge(
     return "unknown"
 
 
+def _extract_all_severity_emojis(
+    report_text: str,
+    retentions: tuple[str, ...] = ("d1", "d7", "d30"),
+) -> str:
+    """Return the per-retention severity emojis as a single space-separated string.
+
+    Reads the per-retention HTML comments `<!-- severity_d1: 🟡 FLAG -->` etc.
+    and extracts just the leading emoji (🔴 / 🟡 / 🟢). Returns e.g. `"🟡 🟢 🟢"`
+    for a typical three-retention report. If a marker is missing, that slot
+    becomes `❓`.
+
+    Used by the lite-variant subject template, where the brand format is
+    "<Signals Agentic Analyst> Tracking Causality in Retention: <platform>
+    <date> 🟡 🟢 🟢" — three emojis, no severity words.
+    """
+    emoji_re = re.compile(r"(🔴|🟡|🟢)")
+    parts: list[str] = []
+    for short in retentions:
+        comment_re = re.compile(
+            rf"<!--\s*severity_{re.escape(short)}\s*:\s*({emoji_re.pattern})",
+            re.IGNORECASE,
+        )
+        m = comment_re.search(report_text)
+        parts.append(m.group(1) if m else "❓")
+    return " ".join(parts)
+
+
 def _run_scheduled_attempt(
     config: dict[str, Any], target_date, *, report_variant: str = "deep"
 ) -> Path | None:
@@ -778,7 +839,11 @@ def _run_scheduled_attempt(
     from tools._common import _SHEET_CACHE
 
     seg = config["schedule"]["target_segment"]
-    query = (
+    # Console-only label for the run summary. Not passed to the LLM —
+    # scheduled runs do not have a human query, and synthesising one
+    # caused the LLM to address the (non-existent) "PM" in the report
+    # body. Cohort context reaches the LLM through the `blocks` list.
+    console_label = (
         f"{target_date.strftime('%B %d')} {seg['platform']} "
         f"{seg['acquisition_source']} retention"
     )
@@ -824,19 +889,19 @@ def _run_scheduled_attempt(
     sheet_stats = _compute_sheet_stats()
     user_message = _build_user_message(
         prose=prose,
-        pm_query=query,
+        pm_query="",
         report_variant=report_variant,
         blocks=blocks,
     )
 
     # 4. Print the full preflight banner (playbook, data, extra docs, model,
-    #    PM query) — same as the interactive `./tune` flow.
+    #    run label) — same as the interactive `./tune` flow.
     _print_preflight(
         prose=prose,
         sheet_stats=sheet_stats,
         docs=_list_docs(),
         model_display=model_display,
-        pm_query=query,
+        pm_query=console_label,
     )
 
     # 5. Run the LLM exactly the same way `run()` does.
@@ -898,14 +963,45 @@ def _send_outcome_email(
     body_text: str,
     attachment_path: Path | None,
     body_is_markdown: bool,
+    report_variant: str = "deep",
 ) -> None:
-    """Compose subject from template + send the final outcome email (success or failure)."""
-    subject_template = config["email"].get(
-        "subject_template", "<Agentic Retention Report> {platform}  {date} · {status}"
+    """Compose subject from template + send the final outcome email (success or failure).
+
+    Both report variants use the same subject shape and the same three-emoji
+    status. The only difference is the brand label inside the angle brackets:
+
+    - lite variant uses `subject_template_lite` —
+      "<Signals Agentic Analyst> Tracking Causality in Retention: <platform>
+      <date> 🟡 🟢 🟢".
+
+    - deep variant uses `subject_template_deep` —
+      "<Signals Agentic Deep Analyst> Tracking Causality in Retention:
+      <platform> <date> 🟡 🟢 🟢".
+
+    - both variant uses the lite template (the lite section comes first and
+      drives the inbox triage signal).
+
+    `status` carries three space-separated emojis (D1 / D7 / D30) on the
+    success path. On the failure paths it carries the plain strings
+    "data unavailable" or "analysis failed".
+    """
+    email_cfg = config["email"]
+    template_key = "subject_template_lite" if report_variant in ("lite", "both") else "subject_template_deep"
+    default_template = (
+        "<Signals Agentic Analyst> Tracking Causality in Retention: {platform} {date} {status}"
+        if report_variant in ("lite", "both")
+        else "<Signals Agentic Deep Analyst> Tracking Causality in Retention: {platform} {date} {status}"
     )
+    subject_template = email_cfg.get(template_key) or email_cfg.get("subject_template") or default_template
+
     seg = config["schedule"]["target_segment"]
+    # The subject's {date} is the RUN DATE (today's IST date), not the D1
+    # cohort day. The body still names cohort-specific dates per block; the
+    # subject is a "today's daily report" signal for inbox triage.
+    from zoneinfo import ZoneInfo
+    run_date_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     subject = subject_template.format(
-        date=target_date,
+        date=run_date_ist,
         status=status,
         platform=str(seg["platform"]).title(),
         acquisition_source=seg["acquisition_source"],
@@ -999,12 +1095,13 @@ def _run_schedule_loop(
                     config, target_date, recipients,
                     status="analysis failed",
                     body_text=(
-                        f"The scheduled D1 retention analysis for {target_date} "
+                        f"The scheduled retention analysis for {target_date} "
                         f"({seg['platform']} / {seg['acquisition_source']}) failed.\n\n"
                         f"Error: {analysis_error}"
                     ),
                     attachment_path=None,
                     body_is_markdown=False,
+                    report_variant=report_variant,
                 )
                 console.print(f"[green]✓ failure notice sent to {len(recipients)} recipient(s)[/green]")
                 return
@@ -1020,7 +1117,7 @@ def _run_schedule_loop(
                     config, target_date, recipients,
                     status="data unavailable",
                     body_text=(
-                        f"D1 data for {target_date} ({seg['platform']} / "
+                        f"D1 cohort data for {target_date} ({seg['platform']} / "
                         f"{seg['acquisition_source']}) was still not in the sheet after "
                         f"{attempts} attempts spaced {interval_min} minutes apart. "
                         f"No analysis was produced.\n\n"
@@ -1028,6 +1125,7 @@ def _run_schedule_loop(
                     ),
                     attachment_path=None,
                     body_is_markdown=False,
+                    report_variant=report_variant,
                 )
                 console.print(f"[green]✓ data-unavailable notice sent to {len(recipients)} recipient(s)[/green]")
                 return
@@ -1038,16 +1136,21 @@ def _run_schedule_loop(
                 console.print(f"[yellow]DRY RUN — would have emailed {report_path.name} to recipients.[/yellow]")
                 return
             report_text = report_path.read_text(encoding="utf-8")
-            severity = _extract_severity_badge(report_text)
+            # All three variants now emit three per-retention severity
+            # markers, so the subject status is the same three-emoji string
+            # (one per retention horizon — D1 / D7 / D30) regardless of
+            # which report shape was produced.
+            status_for_subject = _extract_all_severity_emojis(report_text)
             _send_outcome_email(
                 config, target_date, recipients,
-                status=severity,
+                status=status_for_subject,
                 body_text=report_text,
                 attachment_path=report_path,
                 body_is_markdown=True,
+                report_variant=report_variant,
             )
             console.print(
-                f"[bold green]✓ Email sent to {len(recipients)} recipient(s): {severity}[/bold green]"
+                f"[bold green]✓ Email sent to {len(recipients)} recipient(s): {status_for_subject}[/bold green]"
             )
 
         finally:
@@ -1657,7 +1760,7 @@ def _validate_report_variant(name: str | None) -> str:
     if resolved in ("deep", "both"):
         needed.append(DEEP_TEMPLATE_PATH)
     if resolved in ("lite", "both"):
-        needed.extend([LITE_TEMPLATE_PATH, LITE_LAYOUT_PATH])
+        needed.append(LITE_TEMPLATE_PATH)
     for p in needed:
         if not p.exists():
             _die(
@@ -1665,21 +1768,6 @@ def _validate_report_variant(name: str | None) -> str:
                 extra="  Run from the project root; reports/ must exist.",
             )
     return resolved
-
-
-def _substitute_layout_placeholders(layout_text: str, retention_metric: str) -> str:
-    """Substitute __primary_metric__ / __primary_display__ / __users_metric__ /
-    __users_display__ in the lite layout YAML for one retention block."""
-    from tools._common import RETENTION_DISPLAY
-
-    d = RETENTION_DISPLAY[retention_metric]
-    return (
-        layout_text
-        .replace("__primary_metric__", retention_metric)
-        .replace("__primary_display__", d["primary_display"])
-        .replace("__users_metric__", d["users_metric"])
-        .replace("__users_display__", d["users_display"])
-    )
 
 
 def _default_lite_blocks() -> list[dict[str, Any]]:
@@ -1706,10 +1794,17 @@ def _default_lite_blocks() -> list[dict[str, Any]]:
 
 def _build_lite_blocks_prompt(
     blocks: list[dict[str, Any]],
-    layout_text: str,
     template_text: str,
 ) -> str:
-    """Assemble the lite-variant report-shape block for one or more retention blocks."""
+    """Assemble the lite-variant report-shape block for the retention blocks.
+
+    The lite variant follows a fixed causality narrative per block (What
+    happened / Why it matters / Driver / D0 signals / Acquisition mix /
+    What we can't see / Watch next). There is no PM-tunable metric layout
+    — the template owns the structure. This helper lists the blocks the
+    LLM must emit, the cohort day and retention metric for each, then
+    appends the lite template prose.
+    """
     from tools._common import RETENTION_DISPLAY
 
     parts: list[str] = []
@@ -1740,11 +1835,16 @@ def _build_lite_blocks_prompt(
             )
             continue
 
-        substituted = _substitute_layout_placeholders(layout_text, rm)
-        parts.append("Layout for this block (placeholders already substituted):\n\n")
-        parts.append("```yaml\n")
-        parts.append(f"{substituted}\n")
-        parts.append("```\n\n")
+        parts.append(f"Retention metric for this block: `{rm}`\n")
+        parts.append(f"Horizon label to use in the block heading: **{d['horizon']}**\n")
+        parts.append(f"Cohort day: **{cohort_day}**\n")
+        parts.append(
+            f"Forcing rule: your first MCP call for this block must be "
+            f"`compare_to_baseline(date='{cohort_day}', metric='{rm}', "
+            f"platform='android', acquisition_source='organic', "
+            f"baseline_kind='stable')` — this sets the severity emoji for "
+            f"`<!-- severity_{d['horizon'].lower()}: ... -->`.\n\n"
+        )
 
     parts.append("---\n\n")
     parts.append("## Lite report template\n\n")
@@ -1834,22 +1934,20 @@ def _load_report_section(
         return _build_deep_blocks_prompt(block_list, template)
 
     if variant == "lite":
-        layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
         template = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
-        return _build_lite_blocks_prompt(block_list, layout, template)
+        return _build_lite_blocks_prompt(block_list, template)
 
-    # variant == "both" — emit the multi-block lite section grid first, then
-    # the multi-block deep card + diagnosis below.
-    layout = LITE_LAYOUT_PATH.read_text(encoding="utf-8").strip()
+    # variant == "both" — emit the multi-block lite causality flow first,
+    # then the multi-block deep card + diagnosis below.
     lite_template = LITE_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
     deep_template = DEEP_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
-    lite_section = _build_lite_blocks_prompt(block_list, layout, lite_template)
+    lite_section = _build_lite_blocks_prompt(block_list, lite_template)
     deep_section = _build_deep_blocks_prompt(block_list, deep_template)
     return (
         "Emit BOTH a multi-block lite report AND a multi-block deep report for "
         "this run. Order:\n\n"
-        "1. The lite retention blocks first (D1, D7, D30 in order — use the "
-        "lite layout and template below).\n"
+        "1. The lite retention blocks first (D1, D7, D30 in order — causality "
+        "narrative per block, using the lite template below).\n"
         "2. A horizontal rule (`---`).\n"
         "3. The deep retention blocks next (D1, D7, D30 in order — full status "
         "card + diagnosis per block, using the deep template below).\n\n"
@@ -1920,12 +2018,14 @@ def _build_user_message(
                 "",
                 "---",
                 "",
-                "# PM's specific question for THIS run",
+                "# Focus area for this run",
                 "",
-                "The playbook above sets the framing. For this particular run, the PM has "
-                "added an extra question they want you to focus on. Treat it as the "
-                "primary lens for your report — answer it directly in the TL;DR and "
-                "refer back to it explicitly in your verdicts and findings.",
+                "An additional focus area has been flagged for this particular run. "
+                "Treat it as a lens for emphasis in the diagnostic. Do NOT address "
+                "the originator of the focus area in the report body, do NOT frame "
+                "the report as a reply, and do NOT reference 'the question' or "
+                "any reader by role. The report is a standalone executive briefing "
+                "regardless of how its focus area was supplied.",
                 "",
                 f"> {pm_query}",
             ]

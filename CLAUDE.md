@@ -52,8 +52,7 @@ Files fall into four roles. Knowing the role of a file tells you what changing i
 |---|---|---|
 | `d1-retention-analysis.md` | **PM** | The playbook. Forcing rule, diagnostic flow, output language. Loaded into the prompt every run. Methodology rules specific to D1 analysis live here. Report shape lives in `reports/` and is selected at run time via `--report`. |
 | `reports/deep.md` | Engineer | Deep-variant report template (status card + diagnosis). Appended to the prompt when `--report deep` (the default). |
-| `reports/lite.md` | Engineer | Lite-variant report template (4-section metric dashboard). Appended when `--report lite`. |
-| `reports/lite_layout.yaml` | **PM** | Which metrics the lite report includes and in what order. PM edits freely — add / remove / reorder metrics. Used only by `--report lite` and `--report both`. |
+| `reports/lite.md` | Engineer | Lite-variant report template (three retention blocks per email — D1 / D7 / D30 — each a short causality narrative: What happened, Why it matters, Driver, plus D0 signals / Acquisition mix / What we can't see / Watch next on the D1 block only). Appended when `--report lite` or `--report both`. |
 | `config.yaml` | Engineer | System preamble, model selection, output template. Engineer-owned non-negotiable rules. |
 | `data/sheets/app_health_daily.csv` | Data | Primary daily fact table. Checked into the repo so first clone works without network. The daily refresh pipeline keeps it current. |
 | `data/sheets/app_d1_retention_health_*.csv` | Data | Three D1 cohort pivots (daily / weekly / monthly). Auto-fetched lazily; gitignored. |
@@ -105,13 +104,13 @@ The only project-wide invariant worth restating here, because it is engineer-fac
 | Validate playbook tool calls (sub-second, no LLM) | `./tune --verify` |
 | Inspect the prompt that would go to the LLM | `./tune --dry-run "<query>"` |
 | Real run | `./tune "<question>"` or `./tune` (uses playbook only) |
-| Real run, lite report | `./tune --report lite` (or add a question) — 4-section metric dashboard instead of the diagnostic narrative |
+| Real run, lite report | `./tune --report lite` (or add a question) — three short causality blocks (D1 / D7 / D30) instead of the deep diagnostic narrative |
 | Real run, both report variants | `./tune --report both` — lite section grid first, then the deep card and diagnosis |
 | Environment + dependency check | `./tune doctor` |
 | Regenerate the tool catalog after adding/changing a tool | `uv run python scripts/generate_catalog.py` |
 | Switch model for one run | `./tune --model sonnet "..."` (also: `opus`, `haiku`, `gpt-5.5` for Codex) |
 | Test SMTP credentials without spending an LLM call | `./tune schedule --test-email <addr>` |
-| One-shot scheduled run, testing list (`recipients:`) | `./tune schedule` — analyses the most recent COMPLETE D1 cohort (today − 2 IST, because yesterday's `d1_corrected` is not yet populated at 11:05 AM). Emits the lite 4-section metric dashboard by default. `--dry-run` skips the email send. |
+| One-shot scheduled run, testing list (`recipients:`) | `./tune schedule` — analyses the most recent COMPLETE cohorts for D1, D7, and D30 (today − 2, today − 8, today − 31 IST respectively, since each return day must be fully past). Emits the lite three-block causality report by default. `--dry-run` skips the email send. |
 | One-shot scheduled run, full team (`extended_recipients:`) | `./tune schedule --prod` — same flow, sends to the extended list. This is what the daily cron entry invokes. Lite is the default daily shape. |
 | Scheduled run with the deep diagnostic instead of the lite dashboard | `./tune schedule --prod --report deep` — opt-in override when you want the full 6-row card and diagnostic narrative in the daily email. |
 | Cron entry to install for daily 11:05 IST runs | `5 11 * * * cd "<project>" && ./tune schedule --prod >> "logs/schedule-$(date +\%Y-\%m).log" 2>&1` |
@@ -239,8 +238,7 @@ The most recent design session landed two big threads on top of the v1.3 query-d
 **Multi-variant report system (`--report lite|deep|both`).**
 - The playbook (`d1-retention-analysis.md`) no longer hard-codes a single report shape. Methodology, diagnostic checklist, thresholds, and output-language rules stay; the report shape moved out.
 - `reports/deep.md` carries the deep variant — the 6-row status card plus Diagnosis / Evidence / Context & Flags / What to watch next prose. Same content as before, now in its own file.
-- `reports/lite.md` carries the lite variant — severity banner, then four sections (Engagement / Frequency / Grow Net Installs / Retention) with a colored dot per metric and tiered impact prose. Built for daily email reading.
-- `reports/lite_layout.yaml` is **PM-editable** — controls which metrics the lite report shows and in what order. Engineers stay out of this file; PMs can add, remove, or reorder metrics freely.
+- `reports/lite.md` carries the lite variant — three back-to-back retention blocks per email (D1, D7, D30), each a tight causality narrative (What happened / Why it matters / Driver). The D1 block additionally emits D0 signals, acquisition mix, "What we can't see", and "Watch next"; D7 and D30 stop at the Driver line. Every block closes with a fixed "What would sharpen this read" field-gap list. Built for daily email reading. The lite shape is fixed in the template — there is no PM-tunable layout file.
 - `tune` validates the variant, loads the right files, and concatenates them after the playbook in the user message. The dispatch lives in `_validate_report_variant` and `_load_report_section`.
 - The schedule command **defaults to lite**; the interactive `run` command defaults to deep. Override with `--report` either way.
 
@@ -248,4 +246,8 @@ The most recent design session landed two big threads on top of the v1.3 query-d
 - The severity badge is conveyed via a hidden HTML comment (`<!-- severity: 🔴 ALERT -->`) at the top of every report. `_extract_severity_badge` reads it to set the email subject. The visible body banner is a plain title — no duplicate "ALERT" between subject and body.
 - `_render_markdown_to_html` tints the body's first H1 (when an emoji is present) as a colored pill — red for ALERT, amber for FLAG, green for NORMAL. Inline styles, so Gmail does not strip them. Section headers use a gray pill treatment for visibility on mobile.
 - `_strip_preamble` defensively discards any LLM narration above the banner, so leaked "I have enough evidence…" sentences never reach the email.
-- Subject template is `<Agentic D1 Report> {platform}  {date} · {status}` — for example `<Agentic D1 Report> Android  2026-05-16 · 🔴 ALERT`.
+- Subject templates (same shape for both variants — only the brand label differs):
+  - lite: `<Signals Agentic Analyst> Tracking Causality in Retention: {platform} {date} {status}`
+  - deep: `<Signals Agentic Deep Analyst> Tracking Causality in Retention: {platform} {date} {status}`
+  - `{date}` is the run date (today's IST date), not the cohort day.
+  - `{status}` is three space-separated emojis on the success path — one per retention horizon (D1 then D7 then D30), e.g. `🟡 🟢 🟢`. Failure-path values: `data unavailable` / `analysis failed`.

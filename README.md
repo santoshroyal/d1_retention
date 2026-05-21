@@ -336,7 +336,7 @@ Or use VS Code's Source Control panel to see line-level diffs visually.
 | Command | What it does |
 |---|---|
 | `./tune` | Run the analysis end-to-end using just the playbook prose. |
-| `./tune "Why did D1 dip on March 8?"` | Run end-to-end AND add a one-shot question for this specific run. The question is appended to the prompt with a "PM's specific question for THIS run" header — Claude treats it as the primary lens for the TL;DR and verdicts. |
+| `./tune "Why did D1 dip on March 8?"` | Run end-to-end AND add a one-shot focus area for this specific run. The text is appended to the prompt under a "Focus area for this run" header — the LLM treats it as an emphasis lens for the diagnostic without addressing the originator in the report body. |
 | `./tune doctor` | Sanity-check the environment (claude installed, files in place). |
 | `./tune --dry-run` | Show the prompt that would be sent. Don't call Claude. Useful for sanity checks while you tune the prose. |
 | `./tune --dry-run "your question"` | Same, with the inline question included. Confirm the prompt looks right before paying for a real run. |
@@ -368,7 +368,7 @@ $EDITOR d1-retention-analysis.md            # tune the structural prose
 ./tune "specifically focus on iOS deeplink share"   # add a per-run focus
 ```
 
-The playbook prose is for stable, structural framing. The inline question is for ad-hoc focus on a single run. Both go into the same prompt; the inline question is highlighted to the LLM as "the primary lens for THIS run."
+The playbook prose is for stable, structural framing. The inline text is for ad-hoc focus on a single run. Both go into the same prompt; the inline text is highlighted to the LLM under a "Focus area for this run" header, with explicit guidance not to address whoever supplied it in the report body.
 
 ---
 

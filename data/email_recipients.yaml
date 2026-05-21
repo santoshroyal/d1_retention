@@ -6,7 +6,7 @@
 #                         (intended for daily cron runs that go to the team).
 #
 # Adding or removing an address: edit the relevant list. PM-editable.
-# Emails are sent BCC so individual addresses are not exposed to each other.
+# Emails are sent CC so every recipient sees who else got the report.
 #
 # Engineer-managed plumbing (SMTP host, port, credentials) lives in
 # `config.yaml` under the `email:` key. SMTP credentials are loaded from
@@ -18,5 +18,11 @@ recipients:
 
 # Extended — used for `./tune schedule --prod` (daily cron run to the team).
 extended_recipients:
-  - abhijeet.pola@timesinternet.in
   - ritvij.parikh@timesinternet.in
+  - amit.monga@timesinternet.in
+  - arpit.toshniwal@timesinternet.in
+  - abhijeet.pola@timesinternet.in
+  - shivangi.mishra1@timesinternet.in
+  - pankaj.bisht1@timesinternet.in
+  - toi-one@timesinternet.in
+  - toiandroiddev@timesinternet.in

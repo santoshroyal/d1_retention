@@ -50,9 +50,10 @@ RETENTION_OFFSETS: dict[str, int] = {
     "d30_corrected": 30,
 }
 
-# Display metadata per retention metric. Used by the orchestrator to
-# substitute placeholder tokens in reports/lite_layout.yaml when emitting
-# the per-retention block in a combined multi-retention report.
+# Display metadata per retention metric. Used by the orchestrator to fill
+# the per-retention block header in lite and deep reports (e.g., horizon
+# label "D1" / "D7" / "D30" in block headings; the dN_users column name
+# referenced inside the deep card row "DN Retention").
 #
 #   horizon         — short label ("D1", "D7", "D30") for block headings.
 #   users_metric    — the dN_users column for the "users" bullet in the

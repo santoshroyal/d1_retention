@@ -47,14 +47,13 @@ There are two report variants. Choose with `--report`:
 | Command | What you get |
 |---|---|
 | `./tune` or `./tune --report deep` | Default. A 6-row status card on top (cohort, D1 number, deltas, severity, primary driver, iOS comparison) followed by a free-form diagnostic narrative (Diagnosis / Evidence / Context / What to watch next). For when you want full reasoning. |
-| `./tune --report lite` | A 4-section metric dashboard (Engagement / Frequency / Grow Net Installs / Retention). One line per metric: value, delta vs typical weekday, color dot for impact on D1, and a short impact explanation. For daily reading and email digests. |
+| `./tune --report lite` | Three short retention blocks per email — D1, D7, and D30 — each a tight causality narrative (What happened, Why it matters, Driver). The D1 block goes deeper (D0 signals, acquisition mix, "What we can't see", "Watch next"); D7 and D30 stop at the Driver line. Every block ends with a fixed list of "fields that would sharpen this read." For daily reading and email digests. |
 | `./tune --report both` | The lite dashboard first, then the deep card and diagnosis below. For when you want both quick-scan and full reasoning in one report. |
 
 The shape of each variant is defined in `reports/`:
 
 - `reports/deep.md` — the deep variant template (engineer-managed; do not edit casually).
-- `reports/lite.md` — the lite variant template (engineer-managed; do not edit casually).
-- `reports/lite_layout.yaml` — **which metrics the lite report shows and in what order. PM-editable.** Add, remove, or reorder metrics in this file; the next `./tune --report lite` picks up the change immediately.
+- `reports/lite.md` — the lite variant template (engineer-managed; do not edit casually). The lite shape is fixed in the template — there is no PM-tunable layout file.
 
 ## Where things go
 
