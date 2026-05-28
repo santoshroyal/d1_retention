@@ -253,12 +253,24 @@ def _refresh_one(name: str, *, force: bool) -> dict[str, Any]:
             if not force and not is_due_for_refresh(name):
                 return _result("skipped", "another run refreshed it while we waited")
 
-            try:
-                body = _fetch_body(url, timeout)
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # One immediate retry on network failure. A single Google
+            # publish-to-web fetch occasionally stalls on the read socket
+            # past the 30s timeout while the next attempt succeeds within
+            # seconds. Retrying once costs at most one extra timeout window
+            # and turns most intermittent failures into successful fetches.
+            body = None
+            last_exc: Exception | None = None
+            for attempt in (1, 2):
+                try:
+                    body = _fetch_body(url, timeout)
+                    last_exc = None
+                    break
+                except (urllib.error.URLError, TimeoutError, OSError) as e:
+                    last_exc = e
+            if last_exc is not None:
                 if csv.exists():
-                    return _result("cached", f"network error ({e}); using cached copy")
-                return _result("error", f"network error ({e}); no cache available", byte_count=0)
+                    return _result("cached", f"network error after retry ({last_exc}); using cached copy")
+                return _result("error", f"network error after retry ({last_exc}); no cache available", byte_count=0)
 
             if not _looks_like_csv(body):
                 if csv.exists():

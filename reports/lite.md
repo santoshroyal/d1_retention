@@ -19,11 +19,16 @@ For every block:
 - Use `compute_acquisition_mix_shift(date=cohort_day, platform=android, baseline_days=7)` for the Acquisition mix bullets — it already returns absolute installs, baseline mean, and install ratio per channel. Do not recompute the math.
 - The three-stage diagnostic checklist (acquisition mix shift, D0 signals, hook) is what produces the Driver line and the per-block prose.
 
-## Three retention blocks per report
+## Block sequence per report
 
-Emit three blocks back to back in this order: D1 first, then D7, then D30.
+Emit FOUR blocks back to back in this exact order:
 
-**No cross-references between blocks.** Each block analyses its own cohort day independently. Do not say "the same cohort had a worse D1" inside the D7 block; do not compare across blocks. Each block stands alone.
+1. **D1 retention block** (full causality flow)
+2. **D7 retention block** (compressed)
+3. **D30 retention block** (compressed)
+4. **Uninstall Rate block** (week-on-week pulse — see "Uninstall Rate block" section below)
+
+**No cross-references between blocks.** Each block analyses its own slice independently. Do not say "the same cohort had a worse D1" inside the D7 block; do not compare across blocks. Each block stands alone.
 
 If the orchestrator marks a block as **data missing**, emit only this stub for that block instead of the full content:
 
@@ -41,11 +46,11 @@ Then proceed to the next block.
 
 **Subject line** is set by the orchestrator from `config.yaml`. Do not emit it in the report body.
 
-After the three hidden severity markers, write a single one-line **"The big picture"** TL;DR that summarises the three blocks in plain English. Example shapes:
+After the three retention severity markers (`severity_d1`, `severity_d7`, `severity_d30`), write a single one-line **"The big picture"** TL;DR that summarises the three retention blocks in plain English, optionally with a brief uninstall-side clause when material. The uninstall block's own severity marker (`severity_uninstall`) goes at the start of the Uninstall Rate block, not at the top. Example shapes:
 
-- `**The big picture:** D1 softened on May 17. D7 and D30 held normal.`
-- `**The big picture:** All three retention horizons held within normal range.`
-- `**The big picture:** D7 is the only horizon flagged this cycle.`
+- `**The big picture:** D1 softened on May 17. D7 and D30 held normal. Uninstall pulse normal.`
+- `**The big picture:** All three retention horizons held within normal range; uninstall ratio crossed above 1.0 in the trailing-7d window.`
+- `**The big picture:** D7 is the only retention horizon flagged this cycle. Uninstall pulse normal.`
 
 Then a horizontal rule (`---`) and the first block.
 
@@ -242,12 +247,96 @@ For the **D30 block**:
 
 End each block with `---` (horizontal rule) before the next block starts.
 
+## Uninstall Rate block — emit AFTER the three retention blocks
+
+A fourth block independent of the retention blocks. It analyses uninstall health on a weekly cadence using two comparison windows. Emit it directly after the D30 block's separator and directly before "The bottom line".
+
+**Forcing rule:** Your first MCP call for this block must be `compute_wow_uninstall_pulse(platform='android', acquisition_source='organic')` — **DO NOT pass a `date` parameter**. The tool will use the latest date with install/uninstall data in the sheet, which is typically ONE DAY AHEAD of the D1 cohort day. Install/uninstall is reported same-day (it does not require return-day completion), so the freshest row is the right anchor — using the D1 cohort day would silently throw away a full day of install/uninstall data. The tool returns:
+- `date` — the anchor it picked (use this in your table headings)
+- `trailing_7d` — current 7d vs prior 7d (current is [date-6, date], prior is [date-13, date-7])
+- `week_to_date_mon_to_current` — this week's Monday through `date` vs the same days of the prior week (may be null if `date` is a Monday)
+- `severity` — the deterministic severity classification you must use
+
+Do NOT call `compute_uninstall_deep_analysis` from the lite report — that's for the deep variant. The lite block stays focused on the two-window pulse.
+
+Emit each slot in this exact order:
+
+### U1. Hidden severity marker
+
+```
+<!-- severity_uninstall: 🔴 ALERT -->
+```
+
+Use the `severity` value returned by the tool exactly as-is (one of `🔴 ALERT`, `🟡 FLAG`, `🟢 NORMAL`). This marker does not go to the top of the report — it sits at the start of the Uninstall Rate block.
+
+### U2. Block heading
+
+```
+## 📉 <emoji> Uninstall Rate — Week-on-week (<Platform> <acquisition_source>)
+```
+
+Example: `## 📉 🔴 Uninstall Rate — Week-on-week (Android organic)`
+
+The leading emoji matches the severity (🔴 / 🟡 / 🟢). Title-case the platform.
+
+### U3. Trailing 7-day comparison table
+
+Format with the exact dates returned by the tool:
+
+```
+**Trailing 7 days — <current.start> to <current.end> vs <prior.start> to <prior.end>**
+
+| Metric                    | Prior 7d | Current 7d | Δ          |
+|---------------------------|----------|------------|------------|
+| Installs                  | <prior.installs>   | <current.installs>     | <deltas.installs_pct>%      |
+| Uninstalls                | <prior.uninstalls>  | <current.uninstalls>    | <deltas.uninstalls_pct>%     |
+| Net installs              | <prior.net_installs>     | <current.net_installs>     | <deltas.net_installs_abs>    |
+| Uninstall / install ratio | <prior.ratio>     | <current.ratio>       | <deltas.ratio>     |
+| Same-day drop-off rate    | <prior.drop_off>%   | <current.drop_off>%     | <deltas.drop_off_pp> pp   |
+```
+
+- Format installs / uninstalls / net_installs with thousands separators (e.g. `14,741`)
+- Format the ratio to two decimals (e.g. `1.06`)
+- Format the drop-off rate to two decimals + `%`
+- The Δ column shows percent for counts (`-5.5%`), absolute for net (`-1,445`), absolute for ratio (`+0.11`), and `pp` for drop-off (`+0.74 pp`)
+- Leave one blank line before the table (sane_lists rendering rule)
+
+### U4. Week-to-date comparison table — emit ONLY when present
+
+If `week_to_date_mon_to_current` is not null in the tool output, emit a second table with the same five-row shape. Title format:
+
+```
+**Week-to-date <Mon-to-current-weekday> — <current.start> to <current.end> vs <prior.start> to <prior.end>**
+```
+
+For example, if current covers Mon-Wed: `**Week-to-date Mon-Wed — May 18-20 vs May 11-13**`.
+
+Column headers for this table are `Last week` and `This week` (instead of `Prior 7d` / `Current 7d`).
+
+If `week_to_date_mon_to_current` is null (the run anchor is a Monday with no week-to-date data yet), skip this table entirely.
+
+### U5. Reading paragraph
+
+One short paragraph (2-3 sentences max) interpreting both windows. Cite:
+- The same-day drop-off pp delta from each window
+- The leak ratio (above or below 1.0) from each window
+- Any notable single-day cohort anomaly only if the data flagged one (e.g. a daily drop-off rate well above the trailing baseline)
+
+Examples:
+
+- `**Reading:** Both windows agree — this week is structurally weaker on the uninstall side. Trailing-7d drop-off is up 0.74 pp; week-to-date drop-off is up 2.14 pp and the leak ratio crossed above 1.0 in both windows. The early-week stretch (May 18-20) is the worst of the two.`
+- `**Reading:** Both windows held in normal range. Trailing-7d drop-off ticked down 0.3 pp; week-to-date is essentially flat. Nothing to act on this cycle.`
+
+### U6. Block separator
+
+End the Uninstall Rate block with `---` (horizontal rule) before "The bottom line".
+
 ## Bottom of every report
 
-After the last block's separator, emit **"The bottom line"** as a bold-labelled one-or-two-sentence synthesis across all three blocks. Examples:
+After the Uninstall Rate block's separator, emit **"The bottom line"** as a bold-labelled one-or-two-sentence synthesis across the three retention blocks AND the uninstall pulse. Examples:
 
-- `**The bottom line:** One short-window flag, two longer-window normals. The May 17 D1 dip is the only signal worth acting on this cycle. Next reads (May 18 D1, May 16 follow-through) will tell us whether to treat onboarding push opt-in as the live issue.`
-- `**The bottom line:** All three horizons held normal. Nothing material to act on this cycle.`
+- `**The bottom line:** One short-window retention flag plus an uninstall-side warning — the May 17 D1 dip is the live retention concern, and the uninstall leak ratio has crossed above 1.0 in both this-week views. Worth a closer look this cycle.`
+- `**The bottom line:** All three retention horizons held normal and the uninstall pulse stayed in range. Nothing material to act on this cycle.`
 
 This is the report's final line. Nothing follows it — no footer, no color key.
 
@@ -261,4 +350,4 @@ This is the report's final line. Nothing follows it — no footer, no color key.
 - No cross-references between blocks.
 - **No reference to "the PM", "the user", or any other reader role.** This report is a standalone executive briefing. Do not address whoever asked, do not refer to "the question", do not write "the PM asked", "your question is", "you wanted to know" or any second-person address. The reader is whoever opens the email; treat the report as a written piece that stands on its own. If a focus area was supplied to this run (see the "Focus area for this run" prompt block, if present), let it shape emphasis silently — never name it in the prose.
 
-The lite report is now a **causality narrative** — what happened, why it matters, what drove it, what the evidence shows, what we can't see, what to watch next. Three of those, stacked, with a TL;DR on top and a bottom-line synthesis at the end.
+The lite report is a **causality narrative** — what happened, why it matters, what drove it, what the evidence shows, what we can't see, what to watch next. Three retention-block causality narratives stacked back to back, followed by an Uninstall Rate week-on-week pulse, with a TL;DR on top and a bottom-line synthesis at the end.

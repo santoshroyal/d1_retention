@@ -7,7 +7,7 @@ Use the worked example as a starting point: copy it, edit the values, and
 paste it into `d1-retention-analysis.md` where you want the calculation
 to happen. Then run `./tune --verify` to confirm the call is valid.
 
-**10 tools registered.**
+**12 tools registered.**
 
 ---
 ## `compare_to_baseline`
@@ -168,6 +168,58 @@ Returns {ok, metric, platform, acquisition_source, weekday, baseline_start_date,
 compute_stable_baseline(metric="d1_corrected", platform="android",
                        acquisition_source="organic",
                        weekday="wednesday")
+```
+
+---
+
+## `compute_uninstall_deep_analysis`
+
+**What it does**
+
+Deep uninstall analysis for the deep report's Uninstall Rate section. Returns three cuts beyond the WoW pulse (call compute_wow_uninstall_pulse separately for that): (1) composition — total uninstalls split into same-day (D0) vs longer-tail (non-D0) for 7d / 15d / 30d windows ending at `date`; (2) weekday_pattern_last_30d — mean installs / uninstalls / d0_uninstalls / net_installs per weekday over the last 30 days; (3) mtd_mom_comparison — month-to-date (day 1 through day-of-month of `date`) totals for current month vs same period of prior month, including leak ratio and same-day drop-off rate deltas. Use this for the deep report's diagnostic narrative on uninstall health. Only Android has uninstall data — pass platform='android'. Parameters:   date — YYYY-MM-DD anchor (typically today − 2 IST, the same anchor used for compute_wow_uninstall_pulse).   platform — 'android' or 'ios' (default 'android').   acquisition_source — 'organic' / 'paid' / 'WTA' / 'others' / 'All' (default 'organic').
+
+**Parameters**
+
+| Parameter | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `date` | string | yes | — |  |
+| `platform` | string | no | `'android'` |  |
+| `acquisition_source` | string | no | `'organic'` |  |
+
+**Return shape**
+
+Returns {ok, date, platform, acquisition_source, composition, weekday_pattern_last_30d, mtd_mom_comparison}.
+
+**Worked example (copy this, edit values, paste into the playbook)**
+
+```
+compute_uninstall_deep_analysis(date="<value>")
+```
+
+---
+
+## `compute_wow_uninstall_pulse`
+
+**What it does**
+
+Week-on-week uninstall pulse for the lite report's Uninstall Rate block. Returns two comparison windows: trailing 7 days ([date-6, date] vs [date-13, date-7]) and week-to-date Mon-through-current (this week's Monday through `date` vs the same days of the prior week). Per window: installs, uninstalls, d0_uninstalls, net_installs, uninstall_to_install_ratio, same_day_drop_off_rate_pct, plus pp / percent deltas between current and prior. Also returns a deterministic severity classification ('🔴 ALERT' / '🟡 FLAG' / '🟢 NORMAL') computed from combined drop-off rate and leak ratio movement across both windows. Only Android has uninstall data — pass platform='android' for meaningful results. The deep report should additionally call compute_uninstall_deep_analysis for composition, weekday pattern, and MoM same-period comparison. Parameters:   date — YYYY-MM-DD anchor for the windows; use the most recent date with complete data in the sheet (typically today − 2 IST).   platform — 'android' or 'ios' (default 'android').   acquisition_source — 'organic' / 'paid' / 'WTA' / 'others' / 'All' (default 'organic').
+
+**Parameters**
+
+| Parameter | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `date` | string | yes | — |  |
+| `platform` | string | no | `'android'` |  |
+| `acquisition_source` | string | no | `'organic'` |  |
+
+**Return shape**
+
+Returns {ok, date, platform, acquisition_source, trailing_7d, week_to_date_mon_to_current, severity}.
+
+**Worked example (copy this, edit values, paste into the playbook)**
+
+```
+compute_wow_uninstall_pulse(date="<value>")
 ```
 
 ---
